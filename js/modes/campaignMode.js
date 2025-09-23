@@ -499,6 +499,12 @@ const CampaignMode = {
         this.aiAllies.forEach(ally => {
             if (!ally.isAlive) return;
             
+            // Apply speed powerup (same logic as in game.js updateTanks)
+            const speedStacks = ally.powerups.speed.length;
+            const speedMultiplier = speedStacks > 0 ? Math.pow(GAME_CONFIG.POWERUP_SPEED_MULTIPLIER, speedStacks) : 1;
+            const originalSpeed = ally.speed;
+            ally.speed = originalSpeed * speedMultiplier;
+            
             // Set the AI target to the nearest enemy for campaign mode
             const nearestEnemy = this.findNearestEnemy(ally, this.enemies);
             if (nearestEnemy) {
@@ -514,6 +520,9 @@ const CampaignMode = {
                 // Fallback to simple behavior if AI behavior system not available
                 this.updateAIAllySimple(ally, game, deltaTime);
             }
+            
+            // Restore original speed
+            ally.speed = originalSpeed;
         });
     },
     

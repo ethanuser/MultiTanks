@@ -72,6 +72,7 @@ const GAME_CONFIG = {
     POWERUP_FIRE_RATE_MULTIPLIER: 2.0,
     POWERUP_SPREAD_ANGLE: 0.2, // radians
     POWERUP_BOUNCE_BOUNCES: 3,
+    POWERUP_MAX_STACKS: 4, // Maximum number of stacks for speed, rapid fire, and spread shot powerups
     
     // Powerup types and emojis
     POWERUP_TYPES: {

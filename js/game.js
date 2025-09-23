@@ -529,16 +529,28 @@ class MultiTanksGame {
                 }
                 break;
             case 'SPEED':
-                // Add 10 seconds to speed timer
-                tank.powerups.speed.push(GAME_CONFIG.POWERUP_DURATION);
+                // Add 10 seconds to speed timer (max stacks from config)
+                if (tank.powerups.speed.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.speed.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'RAPID_FIRE':
-                // Add 10 seconds to rapid fire timer
-                tank.powerups.rapidFire.push(GAME_CONFIG.POWERUP_DURATION);
+                // Add 10 seconds to rapid fire timer (max stacks from config)
+                if (tank.powerups.rapidFire.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.rapidFire.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'SPREAD_SHOT':
-                // Add 10 seconds to spread shot timer
-                tank.powerups.spreadShot.push(GAME_CONFIG.POWERUP_DURATION);
+                // Add 10 seconds to spread shot timer (max stacks from config)
+                if (tank.powerups.spreadShot.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.spreadShot.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'BOUNCING_BULLETS':
                 // Extend duration by 15s instead of stacking

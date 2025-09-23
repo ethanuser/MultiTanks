@@ -138,13 +138,25 @@ class GamePowerups {
                 }
                 break;
             case 'SPEED':
-                tank.powerups.speed.push(GAME_CONFIG.POWERUP_DURATION);
+                if (tank.powerups.speed.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.speed.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'RAPID_FIRE':
-                tank.powerups.rapidFire.push(GAME_CONFIG.POWERUP_DURATION);
+                if (tank.powerups.rapidFire.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.rapidFire.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'SPREAD_SHOT':
-                tank.powerups.spreadShot.push(GAME_CONFIG.POWERUP_DURATION);
+                if (tank.powerups.spreadShot.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
+                    tank.powerups.spreadShot.push(GAME_CONFIG.POWERUP_DURATION);
+                } else {
+                    return; // Don't collect powerup if at limit
+                }
                 break;
             case 'BOUNCING_BULLETS':
                 if (tank.powerups.bouncingBullets.length === 0) {
