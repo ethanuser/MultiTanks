@@ -54,6 +54,20 @@ class MultiTanksGame {
      * @param {Object} aiTeamDistribution - AI team distribution for TDM
      */
     async initialize(canvas, numPlayers = 1, numAIBots = 3, gameMode = GAME_MODES.FFA, teamAssignments = {}, aiTeamDistribution = null) {
+        // Reset all controls to clear any stuck keys from previous games
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
+        }
+        
+        // Clear active controls to ensure clean state
+        this.activeControls.clear();
+        
+        // Ensure any prior game loop is stopped before re-initializing
+        if (this.animationId) {
+            cancelAnimationFrame(this.animationId);
+            this.animationId = null;
+        }
+        
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.numPlayers = Math.max(GAME_CONFIG.MIN_PLAYERS, Math.min(GAME_CONFIG.MAX_PLAYERS, numPlayers));
@@ -127,6 +141,16 @@ class MultiTanksGame {
     }
 
     /**
+     * Stop any active game loop
+     */
+    stopGameLoop() {
+        if (this.animationId) {
+            cancelAnimationFrame(this.animationId);
+            this.animationId = null;
+        }
+    }
+
+    /**
      * Initialize tanks (players + AI bots)
      */
     initializeTanks() {
@@ -162,35 +186,12 @@ class MultiTanksGame {
      * @returns {Object} Tank object
      */
     createTank(position, playerIndex, isAI, team = null) {
-        // Determine team for TDM mode
-        let tankTeam = null;
-        let tankColor = TANK_COLORS[playerIndex % TANK_COLORS.length];
-        let name = isAI ? `Bot ${playerIndex - this.numPlayers + 1}` : `Player ${playerIndex + 1}`;
-        
-        if (this.gameMode === GAME_MODES.TDM) {
-            if (isAI) {
-                // For AI, determine team based on distribution
-                const aiIndex = playerIndex - this.numPlayers;
-                let redAICount = 0;
-                let blueAICount = 0;
-                
-                if (this.aiTeamDistribution) {
-                    redAICount = this.aiTeamDistribution.red;
-                    blueAICount = this.aiTeamDistribution.blue;
-                } else {
-                    // Default distribution
-                    redAICount = Math.floor(this.numAIBots / 2);
-                    blueAICount = Math.ceil(this.numAIBots / 2);
-                }
-                
-                tankTeam = aiIndex < redAICount ? 'red' : 'blue';
-            } else {
-                // For players, use custom assignment or default
-                tankTeam = this.teamAssignments[playerIndex] || (playerIndex % 2 === 0 ? 'red' : 'blue');
-            }
-            tankColor = GAME_CONFIG.TEAM_COLORS[tankTeam.toUpperCase()];
+        // Use mode-specific tank creation if available
+        if (this.mode && this.mode.createTank) {
+            return this.mode.createTank(this, position, playerIndex, isAI);
         }
         
+        // Fallback to basic tank creation
         const tank = {
             id: playerIndex,
             x: position.x,
@@ -199,10 +200,10 @@ class MultiTanksGame {
             turretAngle: 0,
             health: GAME_CONFIG.TANK_HEALTH,
             maxHealth: GAME_CONFIG.TANK_HEALTH,
-            color: tankColor,
+            color: TANK_COLORS[playerIndex % TANK_COLORS.length],
             isAI: isAI,
-            team: tankTeam,
-            name: name,
+            team: null,
+            name: isAI ? `Bot ${playerIndex - this.numPlayers + 1}` : `Player ${playerIndex + 1}`,
             lastShot: 0,
             size: GAME_CONFIG.TANK_SIZE,
             speed: GAME_CONFIG.TANK_SPEED,
@@ -244,11 +245,6 @@ class MultiTanksGame {
             aiCurrentPowerupId: null, // ID of powerup currently being chased
             aiPowerupCooldownEndTime: 0 // When AI can start chasing powerups again
         };
-        
-        // Add to team if TDM
-        if (tankTeam) {
-            this.teams[tankTeam].push(tank);
-        }
         
         // Initialize statistics
         this.playerStats.set(tank.id, {
@@ -828,13 +824,51 @@ class MultiTanksGame {
         });
     }
     
+        /**
+     * Determine the winner of the game
+     * @returns {string} Winner information
+     */
+    determineWinner() {
+        if (this.gameMode === GAME_MODES.FFA) {
+            const aliveTanks = this.tanks.filter(t => t.isAlive);
+            if (aliveTanks.length === 1) {
+                return `🏆 Winner: ${aliveTanks[0].name}`;
+            } else if (aliveTanks.length === 0) {
+                return "🤝 Draw - No survivors";
+            } else {
+                return `🤝 Draw - ${aliveTanks.length} survivors`;
+            }
+        } else if (this.gameMode === GAME_MODES.TDM) {
+            const redAlive = this.tanks.filter(t => t.isAlive && t.team === 'red').length;
+            const blueAlive = this.tanks.filter(t => t.isAlive && t.team === 'blue').length;
+            
+            if (redAlive > 0 && blueAlive === 0) {
+                return "🏆 Winner: Red Team";
+            } else if (blueAlive > 0 && redAlive === 0) {
+                return "🏆 Winner: Blue Team";
+            } else if (redAlive === 0 && blueAlive === 0) {
+                return "🤝 Draw - No survivors";
+            } else {
+                return `🤝 Draw - Red: ${redAlive}, Blue: ${blueAlive}`;
+            }
+        }
+        return "";
+    }
+
     /**
      * Generate statistics HTML
      */
     generateStatsHTML(gameDuration) {
+        const winner = this.determineWinner();
+        
         let html = `
             <div style="margin-bottom: 20px;">
-                <strong>Game Duration:</strong> ${Math.round(gameDuration / 1000)}s
+                <div style="text-align: center; margin-bottom: 15px; font-size: 18px; font-weight: bold; color: #4CAF50;">
+                    ${winner}
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <strong>Game Duration:</strong> ${Math.round(gameDuration / 1000)}s
+                </div>
             </div>
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
@@ -842,7 +876,6 @@ class MultiTanksGame {
                         <th style="padding: 10px; border: 1px solid #666;">Player</th>
                         <th style="padding: 10px; border: 1px solid #666;">Team</th>
                         <th style="padding: 10px; border: 1px solid #666;">Time Alive</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Kills</th>
                         <th style="padding: 10px; border: 1px solid #666;">Shots Fired</th>
                         <th style="padding: 10px; border: 1px solid #666;">Shots Hit</th>
                         <th style="padding: 10px; border: 1px solid #666;">Accuracy</th>
@@ -865,7 +898,6 @@ class MultiTanksGame {
                     <td style="padding: 8px; border: 1px solid #666;">${stats.name}</td>
                     <td style="padding: 8px; border: 1px solid #666;">${stats.team || 'N/A'}</td>
                     <td style="padding: 8px; border: 1px solid #666;">${timeAlivePercent}%</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.kills}</td>
                     <td style="padding: 8px; border: 1px solid #666;">${stats.shotsFired}</td>
                     <td style="padding: 8px; border: 1px solid #666;">${stats.shotsHit}</td>
                     <td style="padding: 8px; border: 1px solid #666;">${accuracy}%</td>
@@ -898,6 +930,17 @@ class MultiTanksGame {
      * Restart the game
      */
     restartGame() {
+        // Reset all controls to clear any stuck keys
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
+        }
+        
+        // Clear active controls to ensure clean state
+        this.activeControls.clear();
+        
+        // Stop any existing loop before restarting
+        this.stopGameLoop();
+        
         // Reset game state
         this.gameState = GAME_STATES.PLAYING;
         this.tanks = [];
@@ -922,96 +965,10 @@ class MultiTanksGame {
         // Bullet vs Tank collisions
         this.bullets.forEach((bullet, bulletIndex) => {
             this.tanks.forEach(tank => {
-                if (!tank.isAlive || tank.id === bullet.ownerId) return;
-                
-                // Campaign mode: Prevent AI ally bullets from hurting players or other AI allies
-                if (this.gameMode === GAME_MODES.CAMPAIGN) {
-                    // Check if bullet is from an AI ally
-                    const bulletOwner = this.tanks.find(t => t.id === bullet.ownerId);
-                    if (bulletOwner && bulletOwner.isAIAlly && (tank.isPlayer || tank.isAIAlly)) {
-                        return; // Skip collision - AI ally bullets don't hurt players or AI allies
-                    }
-                    if (bullet.owner === 'enemy' && (tank.isPlayer || tank.isAIAlly)) {
-                        // Enemy bullets can hurt players and AI allies - this is handled in campaign mode section below
-                        return;
-                    }
-                }
-                
-                // Prevent friendly fire in TDM mode
-                if (this.gameMode === GAME_MODES.TDM) {
-                    const bulletOwner = this.tanks.find(t => t.id === bullet.ownerId);
-                    if (bulletOwner && bulletOwner.team === tank.team) {
-                        return; // Skip collision - same team
-                    }
-                }
-                
-                const distance = Math.sqrt((bullet.x - tank.x) ** 2 + (bullet.y - tank.y) ** 2);
-                if (distance < tank.size / 2 + bullet.size / 2) {
-                    // Check invincibility powerup
-                    if (tank.powerups.invincibility.length > 0) {
-                        // Tank is invincible, don't take damage
-                        this.bullets.splice(bulletIndex, 1);
-                        return;
-                    }
-                    
-                    // Hit!
-                    tank.health -= GAME_CONFIG.BULLET_DAMAGE;
-                    this.bullets.splice(bulletIndex, 1);
-                    
-                    // Update statistics
-                    const bulletOwner = this.tanks.find(t => t.id === bullet.ownerId);
-                    if (bulletOwner) {
-                        bulletOwner.shotsHit++;
-                        const bulletOwnerStats = this.playerStats.get(bulletOwner.id);
-                        if (bulletOwnerStats) {
-                            bulletOwnerStats.shotsHit++;
-                        }
-                    }
-                    
-                    // Play hit and hurt sounds (hurt only for players/AI allies in campaign)
-                    if (window.audioSystem) {
-                        if (this.gameMode === GAME_MODES.CAMPAIGN && (tank.isPlayer || tank.isAIAlly)) {
-                            window.audioSystem.hurt();
-                        }
-                        else {
-                            window.audioSystem.hit();
-                        }
-                    }
-                    
-                    if (tank.health <= 0) {
-                        tank.isAlive = false;
-                        tank.deathTime = Date.now();
-                        tank.killedBy = bulletOwner ? bulletOwner.name : 'Unknown';
-                        
-                        // Update kill/death statistics
-                        if (bulletOwner) {
-                            bulletOwner.kills++;
-                            const bulletOwnerStats = this.playerStats.get(bulletOwner.id);
-                            if (bulletOwnerStats) {
-                                bulletOwnerStats.kills++;
-                                bulletOwnerStats.killsList.push(tank.name);
-                            }
-                        }
-                        
-                        const tankStats = this.playerStats.get(tank.id);
-                        if (tankStats) {
-                            tankStats.deaths++;
-                            tankStats.deathTime = tank.deathTime;
-                            tankStats.killedBy = tank.killedBy;
-                            tankStats.killedByList.push(tank.killedBy);
-                        }
-                        
-                        // Play death sound
-                        if (window.audioSystem) {
-                            if (this.gameMode === GAME_MODES.CAMPAIGN && tank.isAIAlly) {
-                                // In campaign, AI allies use player death sound
-                                window.audioSystem.death();
-                            } else if (tank.isAI) {
-                                window.audioSystem.enemyDeath();
-                            } else {
-                                window.audioSystem.death();
-                            }
-                        }
+                // Use mode-specific collision handling
+                if (this.mode && this.mode.handleBulletTankCollision) {
+                    if (this.mode.handleBulletTankCollision(this, bullet, bulletIndex, tank)) {
+                        return; // Collision was handled by the mode
                     }
                 }
             });
@@ -1020,67 +977,9 @@ class MultiTanksGame {
         // Campaign mode: Bullet vs Enemy collisions
         if (this.gameMode === GAME_MODES.CAMPAIGN && this.mode) {
             this.bullets.forEach((bullet, bulletIndex) => {
-                // Enemy bullets should not hit enemies in campaign; skip processing here
-                if (bullet.owner === 'enemy') {
-                    return;
-                }
                 this.mode.enemies.forEach(enemy => {
-                    if (!enemy.isAlive) return;
-                    
-                    const distance = Math.sqrt((bullet.x - enemy.x) ** 2 + (bullet.y - enemy.y) ** 2);
-                    if (distance < enemy.size / 2 + bullet.size / 2) {
-                        // Hit enemy!
-                        enemy.health -= bullet.damage;
-                        this.bullets.splice(bulletIndex, 1);
-
-                        // Update player/ally shotsHit and enemyHits on successful hit
-                        if (bullet.owner === 'player' || bullet.owner === 'aiAlly') {
-                            const bulletOwner = this.tanks.find(t => t.id === bullet.ownerId);
-                            if (bulletOwner) {
-                                bulletOwner.shotsHit++;
-                                const ownerStats = this.playerStats.get(bulletOwner.id);
-                                if (ownerStats) {
-                                    ownerStats.shotsHit++;
-                                    ownerStats.enemyHits++;
-                                }
-                            }
-                        }
-
-                        // Update statistics only when enemy dies
-                        if (enemy.health <= 0 && (bullet.owner === 'player' || bullet.owner === 'aiAlly')) {
-                            this.mode.levelStats.enemiesKilled++;
-                            
-                            // Track kills per player/AI ally
-                            const bulletOwner = this.tanks.find(t => t.id === bullet.ownerId);
-                            if (bulletOwner) {
-                                if (bulletOwner.isPlayer) {
-                                    const currentKills = this.mode.levelStats.playerKills.get(bulletOwner.id) || 0;
-                                    this.mode.levelStats.playerKills.set(bulletOwner.id, currentKills + 1);
-                                } else if (bulletOwner.isAIAlly) {
-                                    const currentKills = this.mode.levelStats.aiAllyKills.get(bulletOwner.id) || 0;
-                                    this.mode.levelStats.aiAllyKills.set(bulletOwner.id, currentKills + 1);
-                                }
-
-                                // Also reflect in global playerStats for end-screen
-                                const ownerStats = this.playerStats.get(bulletOwner.id);
-                                if (ownerStats) {
-                                    ownerStats.kills++;
-                                    ownerStats.killsList.push('Enemy');
-                                }
-                            }
-                        }
-                        
-                        // Play hit sound
-                        window.audioSystem.hit();
-                        
-                        if (enemy.health <= 0) {
-                            enemy.isAlive = false;
-                            
-                            // Play death sound
-                            if (window.audioSystem) {
-                                window.audioSystem.enemyDeath();
-                            }
-                        }
+                    if (this.mode.handleBulletEnemyCollision) {
+                        this.mode.handleBulletEnemyCollision(this, bullet, bulletIndex, enemy);
                     }
                 });
             });
@@ -1089,42 +988,8 @@ class MultiTanksGame {
             this.bullets.forEach((bullet, bulletIndex) => {
                 if (bullet.owner === 'enemy') {
                     this.tanks.forEach(tank => {
-                        if (!tank.isAlive || !(tank.isPlayer || tank.isAIAlly)) return;
-                        
-                        const distance = Math.sqrt((bullet.x - tank.x) ** 2 + (bullet.y - tank.y) ** 2);
-                        if (distance < tank.size / 2 + bullet.size / 2) {
-                            // Check invincibility powerup
-                            if (tank.powerups.invincibility.length > 0) {
-                                // Tank is invincible, don't take damage
-                                this.bullets.splice(bulletIndex, 1);
-                                return;
-                            }
-                            
-                            // Hit!
-                            tank.health -= bullet.damage;
-                            this.bullets.splice(bulletIndex, 1);
-                            
-                            // Campaign: only play hurt for players/AI allies (no hit sound)
-                            if (window.audioSystem) {
-                                window.audioSystem.hurt();
-                            }
-                            
-                            if (tank.health <= 0) {
-                                tank.isAlive = false;
-                                tank.deathTime = Date.now();
-                                
-                                // Play death sound (in campaign, AI allies use player death sound)
-                                if (window.audioSystem) {
-                                    window.audioSystem.death();
-                                }
-
-                                // Update playerStats deaths for players and AI allies
-                                const stats = this.playerStats.get(tank.id);
-                                if (stats) {
-                                    stats.deaths++;
-                                    stats.deathTime = tank.deathTime;
-                                }
-                            }
+                        if (this.mode.handleEnemyBulletTankCollision) {
+                            this.mode.handleEnemyBulletTankCollision(this, bullet, bulletIndex, tank);
                         }
                     });
                 }
@@ -1326,15 +1191,15 @@ class MultiTanksGame {
      * @param {number} currentTime - Current timestamp
      */
     gameLoop(currentTime = performance.now()) {
+        if (this.gameState !== GAME_STATES.PLAYING) return;
+        
         const deltaTime = currentTime - this.lastTime;
         this.lastTime = currentTime;
         
         this.update(deltaTime);
         this.render();
         
-        if (this.gameState === GAME_STATES.PLAYING) {
-            this.animationId = requestAnimationFrame((time) => this.gameLoop(time));
-        }
+        this.animationId = requestAnimationFrame((time) => this.gameLoop(time));
     }
 
     /**
@@ -1343,8 +1208,12 @@ class MultiTanksGame {
     togglePause() {
         this.isPaused = !this.isPaused;
         if (!this.isPaused && this.gameState === GAME_STATES.PLAYING) {
+            // Reset timing and ensure only one loop
+            this.stopGameLoop();
             this.lastTime = performance.now();
             this.gameLoop();
+        } else {
+            this.stopGameLoop();
         }
     }
 

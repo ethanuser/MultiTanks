@@ -36,6 +36,7 @@ class MenuSystem {
         this.initializeKeyboardFallback();
         
         this.updateStartButton();
+        this.updateAudioButtonStates();
         // Defer menu music until first user gesture (autoplay policy)
         const startMenuMusicOnce = async () => {
             if (!window.audioSystem) return;
@@ -113,7 +114,7 @@ class MenuSystem {
             </style>
             <div id="menuContainer" class="menu-container">
                 <div class="menu-content">
-                    <h1 class="game-title">🎮 MultiTanks</h1>
+                    <h1 class="game-title">MultiTanks!</h1>
                     <p class="game-subtitle">MIDI-Controlled Tank Battle</p>
                     
                     <!-- Main Menu -->
@@ -131,42 +132,13 @@ class MenuSystem {
                         </div>
                         
                         <div class="menu-section">
-                            <h2>🎮 Game Mode</h2>
+                            <h2>Game Mode</h2>
                             <div class="game-mode-selector">
                                 <label for="gameMode">Select Game Mode:</label>
                                 <select id="gameMode" class="player-select">
                                     <option value="${GAME_MODES.FFA}">Free For All (FFA)</option>
                                     <option value="${GAME_MODES.TDM}">Team Deathmatch (TDM)</option>
                                     <option value="${GAME_MODES.CAMPAIGN}">Campaign Mode</option>
-                                </select>
-                            </div>
-                        </div>
-                        
-                        <div class="menu-section" id="playerSelectionSection">
-                            <h2>👥 Player Selection</h2>
-                            <div class="player-selector">
-                                <label for="playerCount">Number of Players:</label>
-                                <select id="playerCount" class="player-select">
-                                    <option value="0">0 Players</option>
-                                    <option value="1">1 Player</option>
-                                    <option value="2">2 Players</option>
-                                    <option value="3">3 Players</option>
-                                    <option value="4">4 Players</option>
-                                </select>
-                            </div>
-                            
-                            <div class="player-selector">
-                                <label for="aiBotCount">Number of AI Bots:</label>
-                                <select id="aiBotCount" class="player-select">
-                                    <option value="0">0 AI Bots</option>
-                                    <option value="1">1 AI Bot</option>
-                                    <option value="2">2 AI Bots</option>
-                                    <option value="3">3 AI Bots</option>
-                                    <option value="4">4 AI Bots</option>
-                                    <option value="5">5 AI Bots</option>
-                                    <option value="6">6 AI Bots</option>
-                                    <option value="7">7 AI Bots</option>
-                                    <option value="8">8 AI Bots</option>
                                 </select>
                             </div>
                         </div>
@@ -206,6 +178,35 @@ class MenuSystem {
                                         <div class="control-item">Space - Shoot</div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                        
+                        <div class="menu-section" id="playerSelectionSection">
+                            <h2>👥 Player Selection</h2>
+                            <div class="player-selector">
+                                <label for="playerCount">Number of Players:</label>
+                                <select id="playerCount" class="player-select">
+                                    <option value="0">0 Players</option>
+                                    <option value="1">1 Player</option>
+                                    <option value="2">2 Players</option>
+                                    <option value="3">3 Players</option>
+                                    <option value="4">4 Players</option>
+                                </select>
+                            </div>
+                            
+                            <div class="player-selector">
+                                <label for="aiBotCount">Number of AI Bots:</label>
+                                <select id="aiBotCount" class="player-select">
+                                    <option value="0">0 AI Bots</option>
+                                    <option value="1">1 AI Bot</option>
+                                    <option value="2">2 AI Bots</option>
+                                    <option value="3">3 AI Bots</option>
+                                    <option value="4">4 AI Bots</option>
+                                    <option value="5">5 AI Bots</option>
+                                    <option value="6">6 AI Bots</option>
+                                    <option value="7">7 AI Bots</option>
+                                    <option value="8">8 AI Bots</option>
+                                </select>
                             </div>
                         </div>
                         
@@ -274,7 +275,10 @@ class MenuSystem {
                         
                         <div class="menu-section">
                             <button id="startGameBtn" class="menu-btn start" disabled>Start Game</button>
-                            <button id="audioToggleBtn" class="menu-btn secondary">🔊 Audio: ON</button>
+                            <div class="audio-controls">
+                                <button id="musicToggleBtn" class="menu-btn secondary">🎵 Music: ON</button>
+                                <button id="sfxToggleBtn" class="menu-btn secondary">🔊 SFX: ON</button>
+                            </div>
                         </div>
                     </div>
                     
@@ -310,6 +314,7 @@ class MenuSystem {
         // Player count selection
         document.getElementById('playerCount').addEventListener('change', (e) => {
             this.selectedPlayers = parseInt(e.target.value);
+            this.updatePlayerSelectionUI();
             this.updateStartButton();
         });
         
@@ -330,6 +335,7 @@ class MenuSystem {
         // Campaign settings
         document.getElementById('campaignPlayerCount').addEventListener('change', (e) => {
             this.selectedPlayers = parseInt(e.target.value);
+            this.updateCampaignSettings();
             this.updateStartButton();
         });
         
@@ -370,10 +376,30 @@ class MenuSystem {
             this.showMainMenu();
         });
         
-        // Audio toggle
-        document.getElementById('audioToggleBtn').addEventListener('click', () => {
-            this.toggleAudio();
+        // Music toggle
+        document.getElementById('musicToggleBtn').addEventListener('click', () => {
+            this.toggleMusic();
         });
+        
+        // SFX toggle
+        document.getElementById('sfxToggleBtn').addEventListener('click', () => {
+            this.toggleSFX();
+        });
+    }
+
+    /**
+     * Helper to regenerate AI bot options based on max allowed
+     */
+    regenerateAIBotOptions(selectEl, maxBots, currentValue) {
+        if (!selectEl) return;
+        const clampedMax = Math.max(0, maxBots);
+        let optionsHTML = '';
+        for (let i = 0; i <= clampedMax; i++) {
+            optionsHTML += `<option value="${i}">${i} AI ${i === 1 ? 'Bot' : 'Bots'}</option>`;
+        }
+        selectEl.innerHTML = optionsHTML;
+        const clampedValue = Math.max(0, Math.min(currentValue, clampedMax));
+        selectEl.value = String(clampedValue);
     }
 
     /**
@@ -477,6 +503,26 @@ class MenuSystem {
     }
     
     /**
+     * Update audio button states based on current audio system state
+     */
+    updateAudioButtonStates() {
+        if (window.audioSystem) {
+            const musicButton = document.getElementById('musicToggleBtn');
+            const sfxButton = document.getElementById('sfxToggleBtn');
+            
+            if (musicButton) {
+                const musicEnabled = window.audioSystem.isMusicEnabled();
+                musicButton.textContent = musicEnabled ? '🎵 Music: ON' : '🎵 Music: OFF';
+            }
+            
+            if (sfxButton) {
+                const sfxEnabled = window.audioSystem.isEnabled();
+                sfxButton.textContent = sfxEnabled ? '🔊 SFX: ON' : '🔇 SFX: OFF';
+            }
+        }
+    }
+    
+    /**
      * Update player selection UI based on game mode
      */
     updatePlayerSelectionUI() {
@@ -508,18 +554,11 @@ class MenuSystem {
         }
         playerCountSelect.value = this.selectedPlayers;
         
-        aiBotCountSelect.innerHTML = `
-            <option value="0">0 AI Bots</option>
-            <option value="1">1 AI Bot</option>
-            <option value="2">2 AI Bots</option>
-            <option value="3">3 AI Bots</option>
-            <option value="4">4 AI Bots</option>
-            <option value="5">5 AI Bots</option>
-            <option value="6">6 AI Bots</option>
-            <option value="7">7 AI Bots</option>
-            <option value="8">8 AI Bots</option>
-        `;
-        aiBotCountSelect.value = this.selectedAIBots;
+        // Cap AI bots so that players + AI <= MAX_TOTAL_TANKS (default 8)
+        const maxTotal = (window.GAME_CONFIG && window.GAME_CONFIG.MAX_TOTAL_TANKS) ? window.GAME_CONFIG.MAX_TOTAL_TANKS : 8;
+        const maxAIBots = Math.max(0, maxTotal - this.selectedPlayers);
+        this.regenerateAIBotOptions(aiBotCountSelect, maxAIBots, this.selectedAIBots);
+        this.selectedAIBots = parseInt(aiBotCountSelect.value);
     }
 
     /**
@@ -539,9 +578,11 @@ class MenuSystem {
             if (campaignPlayerCount) {
                 campaignPlayerCount.value = this.selectedPlayers;
             }
-            if (campaignAIBotCount) {
-                campaignAIBotCount.value = this.selectedAIBots;
-            }
+            // Cap AI allies so that players + AI <= MAX_TOTAL_TANKS (default 8)
+            const maxTotal = (window.GAME_CONFIG && window.GAME_CONFIG.MAX_TOTAL_TANKS) ? window.GAME_CONFIG.MAX_TOTAL_TANKS : 8;
+            const maxAIs = Math.max(0, maxTotal - this.selectedPlayers);
+            this.regenerateAIBotOptions(campaignAIBotCount, maxAIs, this.selectedAIBots);
+            this.selectedAIBots = campaignAIBotCount ? parseInt(campaignAIBotCount.value) : this.selectedAIBots;
         } else {
             campaignSettings.style.display = 'none';
             playerSection.style.display = 'block';
@@ -737,6 +778,17 @@ class MenuSystem {
             }
         }
         
+        // Persist last used settings for hot-restart (R)
+        this.lastSettings = {
+            gameMode: this.selectedGameMode,
+            players: this.selectedPlayers,
+            aiBots: this.selectedAIBots,
+            teamAssignments: { ...this.teamAssignments },
+            aiTeamDistribution: aiTeamDistribution,
+            campaignLevel: this.selectedCampaignLevel,
+            campaignDifficulty: this.selectedCampaignDifficulty
+        };
+        
         // Initialize game
         window.game = new MultiTanksGame();
         
@@ -759,6 +811,62 @@ class MenuSystem {
     }
 
     /**
+     * Restart with last used settings (used by R hotkey from menu)
+     */
+    async restartWithLastSettings() {
+        if (!this.lastSettings) return;
+        
+        // Hide menu
+        this.menuElement.classList.add('hidden');
+        // Stop menu music before starting game
+        if (window.audioSystem) {
+            window.audioSystem.stopMusic();
+        }
+        
+        // Create a new canvas element dynamically to ensure it's properly rendered
+        const newCanvas = document.createElement('canvas');
+        newCanvas.id = 'gameCanvas';
+        newCanvas.className = 'game-canvas';
+        newCanvas.width = window.innerWidth;
+        newCanvas.height = window.innerHeight;
+        newCanvas.style.width = window.innerWidth + 'px';
+        newCanvas.style.height = window.innerHeight + 'px';
+        
+        // Remove old canvas if it exists
+        const oldCanvas = document.getElementById('gameCanvas');
+        if (oldCanvas) {
+            oldCanvas.remove();
+        }
+        
+        // Add new canvas to body
+        document.body.appendChild(newCanvas);
+        this.gameElement = newCanvas;
+        
+        // Force a reflow
+        newCanvas.offsetHeight;
+        
+        // Reset controls
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
+        }
+        
+        const s = this.lastSettings;
+        window.game = new MultiTanksGame();
+        
+        if (s.gameMode === GAME_MODES.CAMPAIGN) {
+            await window.game.initialize(this.gameElement, s.players, s.aiBots, s.gameMode, s.teamAssignments, s.aiTeamDistribution);
+            if (window.game.mode) {
+                window.game.mode.currentLevel = s.campaignLevel;
+                window.game.mode.difficulty = s.campaignDifficulty;
+                window.game.mode.initializeLevel(window.game);
+            }
+        } else {
+            await window.game.initialize(this.gameElement, s.players, s.aiBots, s.gameMode, s.teamAssignments, s.aiTeamDistribution);
+        }
+        this.currentScreen = 'game';
+    }
+
+    /**
      * Show main menu
      */
     showMainMenu() {
@@ -768,13 +876,24 @@ class MenuSystem {
     }
 
     /**
-     * Toggle audio on/off
+     * Toggle music on/off
      */
-    toggleAudio() {
+    toggleMusic() {
+        if (window.audioSystem) {
+            const enabled = window.audioSystem.toggleMusic();
+            const button = document.getElementById('musicToggleBtn');
+            button.textContent = enabled ? '🎵 Music: ON' : '🎵 Music: OFF';
+        }
+    }
+    
+    /**
+     * Toggle SFX on/off
+     */
+    toggleSFX() {
         if (window.audioSystem) {
             const enabled = window.audioSystem.toggle();
-            const button = document.getElementById('audioToggleBtn');
-            button.textContent = enabled ? '🔊 Audio: ON' : '🔇 Audio: OFF';
+            const button = document.getElementById('sfxToggleBtn');
+            button.textContent = enabled ? '🔊 SFX: ON' : '🔇 SFX: OFF';
         }
     }
 
@@ -785,6 +904,11 @@ class MenuSystem {
         if (window.game) {
             window.game.stop();
             window.game = null;
+        }
+        
+        // Reset all controls to clear any stuck keys
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
         }
         
         // Remove the canvas element
@@ -930,6 +1054,17 @@ const menuStyles = `
             background: #333;
             color: #666;
             cursor: not-allowed;
+        }
+        
+        .audio-controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+        
+        .audio-controls .menu-btn {
+            min-width: 120px;
         }
         
         .player-selector {
@@ -1099,6 +1234,16 @@ const menuStyles = `
             .player-assignment {
                 grid-template-columns: 1fr;
             }
+            
+            .audio-controls {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .audio-controls .menu-btn {
+                width: 100%;
+                max-width: 200px;
+            }
         }
     </style>
 `;
@@ -1110,3 +1255,33 @@ document.head.insertAdjacentHTML('beforeend', menuStyles);
 // GLOBAL MENU INSTANCE
 // =============================================================================
 window.menu = new MenuSystem();
+
+// Global R hotkey to restart current game/level or relaunch last settings
+(function setupGlobalRestartHotkey() {
+    let lastRestartAt = 0;
+    window.addEventListener('keydown', async (e) => {
+        if ((e.key === 'r' || e.key === 'R') && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            const now = Date.now();
+            if (now - lastRestartAt < 500) return; // debounce
+            lastRestartAt = now;
+            
+            // Reset MIDI controls immediately
+            if (window.midiHandler) {
+                window.midiHandler.resetAllControls();
+            }
+            
+            if (window.game) {
+                // If campaign, restart current level with same difficulty
+                if (window.game.gameMode === GAME_MODES.CAMPAIGN && window.game.mode && window.game.mode.restartLevel) {
+                    window.game.mode.restartLevel(window.game);
+                } else if (window.game.restartGame) {
+                    // Regular modes: use built-in restart (preserves settings)
+                    window.game.restartGame();
+                }
+            } else if (window.menu && window.menu.restartWithLastSettings) {
+                // From menu: relaunch last settings
+                window.menu.restartWithLastSettings();
+            }
+        }
+    });
+})();

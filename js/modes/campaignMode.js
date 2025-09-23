@@ -51,6 +51,19 @@ const CampaignMode = {
         console.log('🎯 Campaign Mode: Initializing Level', this.currentLevel);
         console.log('🎯 Game players:', game.numPlayers, 'AI bots:', game.numAIBots);
         
+        // Stop any previous game loop to avoid multiple loops accelerating
+        if (game.stopGameLoop) {
+            game.stopGameLoop();
+        }
+        
+        // Reset all controls to clear any stuck keys
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
+        }
+        
+        // Clear active controls to ensure clean state
+        game.activeControls.clear();
+        
         // Clear all game objects (bullets, powerups, etc.)
         game.clearGameObjects();
         
@@ -231,10 +244,13 @@ const CampaignMode = {
         }
         console.log('🎯 Enemy config:', config);
         
+        // Boss enemies spawn in the center of the map, others use random positions
+        const spawnPosition = type === 'boss' ? this.getBossSpawnPosition(game) : this.getRandomSpawnPosition(game);
+        
         const enemy = {
             type: type,
-            x: this.getRandomSpawnPosition(game).x,
-            y: this.getRandomSpawnPosition(game).y,
+            x: spawnPosition.x,
+            y: spawnPosition.y,
             size: config.size,
             health: config.health,
             maxHealth: config.health,
@@ -277,17 +293,21 @@ const CampaignMode = {
     getRandomSpawnPosition(game) {
         const margin = CAMPAIGN_CONFIG.ENEMY_SPAWN_MARGIN;
         const attempts = CAMPAIGN_CONFIG.ENEMY_SPAWN_ATTEMPTS;
+        const minDistance = CAMPAIGN_CONFIG.ENEMY_SPAWN_MIN_DISTANCE_FROM_PLAYERS;
+        
+        // Protect the entire player/AI ally spawn grid area
+        const protectedPositions = this.calculateSpawnPositions(game);
+        // Also include any currently alive player positions (safety)
+        const playerPositions = game.tanks.filter(t => t.isPlayer).map(t => ({ x: t.x, y: t.y }));
+        const allProtected = protectedPositions.concat(playerPositions);
         
         for (let i = 0; i < attempts; i++) {
             const x = margin + Math.random() * (GAME_CONFIG.MAP_WIDTH - 2 * margin);
             const y = margin + Math.random() * (GAME_CONFIG.MAP_HEIGHT - 2 * margin);
             
-            // Check if position is far enough from players
-            const playerPositions = game.tanks.filter(t => t.isPlayer).map(t => ({ x: t.x, y: t.y }));
-            const minDistance = CAMPAIGN_CONFIG.ENEMY_SPAWN_MIN_DISTANCE_FROM_PLAYERS;
+            // Check if position is far enough from players and their spawn grid (including AI allies grid)
             let validPosition = true;
-            
-            for (const pos of playerPositions) {
+            for (const pos of allProtected) {
                 const distance = Math.sqrt((x - pos.x) ** 2 + (y - pos.y) ** 2);
                 if (distance < minDistance) {
                     validPosition = false;
@@ -307,15 +327,27 @@ const CampaignMode = {
         };
     },
     
+    getBossSpawnPosition(game) {
+        // Boss spawns in the bottom right corner
+        const centerX = GAME_CONFIG.MAP_WIDTH * 3 / 4;
+        const centerY = GAME_CONFIG.MAP_HEIGHT * 3 / 4;
+        return { x: centerX, y: centerY };
+    },
+    
     initializeAIAllies(game) {
         this.aiAllies = [];
         const maxAllies = Math.min(game.numAIBots, this.getMaxAIAllies(game));
         
+        // Use the same combined spawn grid as players, filling left-to-right
+        const spawnPositions = this.calculateSpawnPositions(game);
+        
         for (let i = 0; i < maxAllies; i++) {
+            const spawnIndex = game.numPlayers + i;
+            const spawnPos = spawnPositions[spawnIndex] || { x: CAMPAIGN_CONFIG.PLAYER_SPAWN.x, y: CAMPAIGN_CONFIG.PLAYER_SPAWN.y };
             const ally = {
                 id: `aiAlly_${i}`, // Add unique ID for AI allies
-                x: CAMPAIGN_CONFIG.PLAYER_SPAWN.x + (i % 4) * CAMPAIGN_CONFIG.PLAYER_SPAWN.spacing,
-                y: CAMPAIGN_CONFIG.PLAYER_SPAWN.y + Math.floor(i / 4) * CAMPAIGN_CONFIG.PLAYER_SPAWN.spacing,
+                x: spawnPos.x,
+                y: spawnPos.y,
                 angle: Math.random() * Math.PI * 2, // Random initial rotation
                 turretAngle: 0,
                 health: GAME_CONFIG.TANK_HEALTH,
@@ -410,33 +442,57 @@ const CampaignMode = {
     updateCamera(game) {
         if (!game.camera) return;
         
-        // Calculate weighted average position: players have higher weight than AI allies
-        const aliveTanks = game.tanks.filter(t => t.isAlive && (t.isPlayer || t.isAIAlly));
-        if (aliveTanks.length === 0) return;
+        // Get target to follow (players first, then AI allies as fallback)
+        const alivePlayers = game.tanks.filter(t => t.isAlive && t.isPlayer);
+        const aliveAllies = game.tanks.filter(t => t.isAlive && t.isAIAlly);
         
-        const playerWeight = CAMPAIGN_CONFIG.CAMERA_PLAYER_WEIGHT;
-        let sumX = 0, sumY = 0, totalWeight = 0;
-        aliveTanks.forEach(t => {
-            const w = t.isPlayer ? playerWeight : 1;
-            sumX += t.x * w;
-            sumY += t.y * w;
-            totalWeight += w;
-        });
-        const avgX = sumX / totalWeight;
-        const avgY = sumY / totalWeight;
+        let targetX, targetY;
         
-        // Update camera target
-        game.camera.targetX = avgX - GAME_CONFIG.MAP_WIDTH / 2;
-        game.camera.targetY = avgY - GAME_CONFIG.MAP_HEIGHT / 2;
+        if (alivePlayers.length > 0) {
+            // Focus on players only
+            let sumX = 0, sumY = 0;
+            alivePlayers.forEach(player => {
+                sumX += player.x;
+                sumY += player.y;
+            });
+            targetX = sumX / alivePlayers.length;
+            targetY = sumY / alivePlayers.length;
+        } else if (aliveAllies.length > 0) {
+            // Fallback to AI allies
+            let sumX = 0, sumY = 0;
+            aliveAllies.forEach(ally => {
+                sumX += ally.x;
+                sumY += ally.y;
+            });
+            targetX = sumX / aliveAllies.length;
+            targetY = sumY / aliveAllies.length;
+        } else {
+            return; // No one alive
+        }
         
-        // Smoothly follow target
+        // Calculate where camera should be to center the target
+        const viewportCenterX = window.innerWidth / 2;
+        const viewportCenterY = window.innerHeight / 2;
+        
+        let desiredCameraX = targetX - viewportCenterX;
+        let desiredCameraY = targetY - viewportCenterY;
+        
+        // Clamp to map bounds
+        const maxCameraX = Math.max(0, GAME_CONFIG.MAP_WIDTH - window.innerWidth);
+        const maxCameraY = Math.max(0, GAME_CONFIG.MAP_HEIGHT - window.innerHeight);
+        
+        desiredCameraX = Math.max(0, Math.min(desiredCameraX, maxCameraX));
+        desiredCameraY = Math.max(0, Math.min(desiredCameraY, maxCameraY));
+        
+        // Simple smooth following - no complex dead zones or edge detection
         const followSpeed = CAMPAIGN_CONFIG.CAMERA.followSpeed;
-        game.camera.x += (game.camera.targetX - game.camera.x) * followSpeed;
-        game.camera.y += (game.camera.targetY - game.camera.y) * followSpeed;
         
-        // Clamp camera to map bounds
-        game.camera.x = Math.max(0, Math.min(game.camera.x, GAME_CONFIG.MAP_WIDTH - window.innerWidth));
-        game.camera.y = Math.max(0, Math.min(game.camera.y, GAME_CONFIG.MAP_HEIGHT - window.innerHeight));
+        game.camera.x += (desiredCameraX - game.camera.x) * followSpeed;
+        game.camera.y += (desiredCameraY - game.camera.y) * followSpeed;
+        
+        // Final bounds check
+        game.camera.x = Math.max(0, Math.min(game.camera.x, maxCameraX));
+        game.camera.y = Math.max(0, Math.min(game.camera.y, maxCameraY));
     },
     
     updateAIAllies(game, deltaTime) {
@@ -870,6 +926,30 @@ const CampaignMode = {
         this.showLevelStats(game, false);
     },
     
+    /**
+     * Determine the winner of the campaign level
+     * @param {Object} game - Game instance
+     * @param {boolean} success - Whether the level was completed successfully
+     * @returns {string} Winner information
+     */
+    determineCampaignWinner(game, success) {
+        if (success) {
+            const alivePlayers = game.tanks.filter(t => t.isAlive && t.isPlayer).length;
+            const aliveAllies = this.aiAllies.filter(a => a.isAlive).length;
+            const totalAlive = alivePlayers + aliveAllies;
+            
+            if (alivePlayers > 0) {
+                return `🏆 Victory! Players survived: ${alivePlayers}${aliveAllies > 0 ? `, AI Allies: ${aliveAllies}` : ''}`;
+            } else if (aliveAllies > 0) {
+                return `🤖 AI Allies completed the level: ${aliveAllies}`;
+            } else {
+                return "🤝 Level completed but no survivors";
+            }
+        } else {
+            return "💀 Defeat - All players and allies eliminated";
+        }
+    },
+
     showLevelStats(game, success) {
         // Create level completion overlay
         const overlay = document.createElement('div');
@@ -895,14 +975,27 @@ const CampaignMode = {
             padding: 30px;
             border-radius: 10px;
             text-align: center;
-            max-width: 1000px;
+            max-width: 1200px;
+            max-height: 80vh;
+            overflow-y: auto;
             border: 2px solid ${success ? '#4caf50' : '#f44336'};
         `;
+        
+        const winner = this.determineCampaignWinner(game, success);
         
         const title = document.createElement('h2');
         title.textContent = success ? `Level ${this.currentLevel} Complete!` : `Level ${this.currentLevel} Failed!`;
         title.style.color = success ? '#4caf50' : '#f44336';
-        title.style.marginBottom = '20px';
+        title.style.marginBottom = '10px';
+        
+        const winnerDiv = document.createElement('div');
+        winnerDiv.textContent = winner;
+        winnerDiv.style.cssText = `
+            font-size: 16px;
+            font-weight: bold;
+            color: ${success ? '#4caf50' : '#f44336'};
+            margin-bottom: 20px;
+        `;
         
         const statsDiv = document.createElement('div');
         statsDiv.style.textAlign = 'left';
@@ -910,48 +1003,55 @@ const CampaignMode = {
         
         // Show richer statistics (similar to FFA/TDM but relevant to campaign)
         const totalKills = this.levelStats.enemiesKilled;
+        const gameDuration = Date.now() - game.gameStartTime;
+        
         let tableRows = '';
         game.playerStats.forEach((stats, id) => {
             const tank = game.tanks.find(t => t.id === id);
             if (!tank) return;
             const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
-            const timeAliveSec = Math.round((stats.timeAlive || (tank.isAlive ? (Date.now() - game.gameStartTime) : (tank.deathTime - game.gameStartTime))) / 1000);
+            const timeAliveSec = Math.round((stats.timeAlive || (tank.isAlive ? gameDuration : (tank.deathTime - game.gameStartTime))) / 1000);
+            const timeAlivePercent = Math.round(((stats.timeAlive || (tank.isAlive ? gameDuration : (tank.deathTime - game.gameStartTime))) / gameDuration) * 100);
             const role = tank.isPlayer ? 'Player' : (tank.isAIAlly ? 'AI Ally' : '');
             if (!role) return; // show only players and allies
+            
             tableRows += `
                 <tr>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.name}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.kills}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.shotsFired}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.shotsHit}</td>
-                    <td style=\"padding: 6px; border-bottom: 1px solid #444;\">${stats.enemyHits || 0}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${accuracy}%</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${timeAliveSec}s</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.deaths}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #444;">${stats.powerupsCollected || 0}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${stats.name}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${role}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${timeAlivePercent}%</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${stats.kills}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${stats.shotsFired}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${stats.shotsHit}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${accuracy}%</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${tank ? tank.health : 0}</td>
+                    <td style="padding: 8px; border: 1px solid #666;">${stats.powerupsCollected || 0}</td>
                 </tr>`;
         });
+        
         statsDiv.innerHTML = `
-            <h3 style="color: #2196f3; margin-bottom: 10px;">Statistics</h3>
-            <p><strong>Total Enemies Killed:</strong> ${totalKills}</p>
-            <p><strong>Level:</strong> ${this.currentLevel}/${CAMPAIGN_CONFIG.TOTAL_LEVELS}</p>
-            <p><strong>Difficulty:</strong> ${this.difficulty}</p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+            <h3 style="color: #2196f3; margin-bottom: 15px; text-align: center;">Level Statistics</h3>
+            <div style="margin-bottom: 15px; text-align: center;">
+                <p><strong>Total Enemies Killed:</strong> ${totalKills}</p>
+                <p><strong>Level:</strong> ${this.currentLevel}/${CAMPAIGN_CONFIG.TOTAL_LEVELS} | <strong>Difficulty:</strong> ${this.difficulty}</p>
+                <p><strong>Game Duration:</strong> ${Math.round(gameDuration / 1000)}s</p>
+            </div>
+            <table style="width: 100%; border-collapse: collapse;">
                 <thead>
-                    <tr style="background: #444;">
-                        <th style="padding: 6px; text-align: left;">Name</th>
-                        <th style="padding: 6px; text-align: left;">Kills</th>
-                        <th style="padding: 6px; text-align: left;">Shots Fired</th>
-                        <th style=\"padding: 6px; text-align: left;\">Shots Hit</th>
-                        <th style=\"padding: 6px; text-align: left;\">Enemy Hits</th>
-                        <th style="padding: 6px; text-align: left;">Accuracy</th>
-                        <th style="padding: 6px; text-align: left;">Time Alive</th>
-                        <th style="padding: 6px; text-align: left;">Deaths</th>
-                        <th style="padding: 6px; text-align: left;">Powerups</th>
+                    <tr style="background: #555;">
+                        <th style="padding: 10px; border: 1px solid #666;">Player</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Role</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Time Alive</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Kills</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Shots Fired</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Shots Hit</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Accuracy</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Final Health</th>
+                        <th style="padding: 10px; border: 1px solid #666;">Powerups</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${tableRows || '<tr><td colspan="8" style="padding: 8px;">No data</td></tr>'}
+                    ${tableRows || '<tr><td colspan="9" style="padding: 8px; text-align: center;">No data</td></tr>'}
                 </tbody>
             </table>
         `;
@@ -1040,6 +1140,7 @@ const CampaignMode = {
         buttonDiv.appendChild(menuBtn);
         
         content.appendChild(title);
+        content.appendChild(winnerDiv);
         content.appendChild(statsDiv);
         content.appendChild(buttonDiv);
         overlay.appendChild(content);
@@ -1101,6 +1202,16 @@ const CampaignMode = {
         title.style.marginBottom = '20px';
         title.style.fontSize = '2.5em';
         title.style.textShadow = '2px 2px 4px rgba(0,0,0,0.5)';
+        
+        const winner = this.determineCampaignWinner(game, true);
+        const winnerDiv = document.createElement('div');
+        winnerDiv.textContent = winner;
+        winnerDiv.style.cssText = `
+            font-size: 18px;
+            font-weight: bold;
+            color: #4caf50;
+            margin-bottom: 20px;
+        `;
         
         const subtitle = document.createElement('h2');
         subtitle.textContent = 'Congratulations! You have conquered all 5 levels!';
@@ -1183,6 +1294,7 @@ const CampaignMode = {
         buttonDiv.appendChild(menuBtn);
         
         content.appendChild(title);
+        content.appendChild(winnerDiv);
         content.appendChild(subtitle);
         content.appendChild(statsDiv);
         content.appendChild(buttonDiv);
@@ -1192,6 +1304,14 @@ const CampaignMode = {
     },
     
     restartLevel(game) {
+        // Reset all controls to clear any stuck keys
+        if (window.midiHandler) {
+            window.midiHandler.resetAllControls();
+        }
+        
+        // Clear active controls to ensure clean state
+        game.activeControls.clear();
+        
         this.initializeLevel(game);
         game.gameState = GAME_STATES.PLAYING;
     },
@@ -1212,6 +1332,173 @@ const CampaignMode = {
                 `Mode: Campaign (${this.difficulty})`
             ]
         };
+    },
+    
+    /**
+     * Handle bullet vs tank collisions for Campaign mode
+     * @param {Object} game - Game instance
+     * @param {Object} bullet - Bullet object
+     * @param {number} bulletIndex - Index of bullet in bullets array
+     * @param {Object} tank - Tank object
+     * @returns {boolean} True if collision was handled
+     */
+    handleBulletTankCollision(game, bullet, bulletIndex, tank) {
+        // Define friendly fire check for Campaign mode
+        const friendlyFireCheck = (game, bullet, tank) => {
+            const bulletOwner = game.tanks.find(t => t.id === bullet.ownerId);
+            
+            // AI ally bullets don't hurt players or AI allies
+            if (bulletOwner && bulletOwner.isAIAlly && (tank.isPlayer || tank.isAIAlly)) {
+                return true;
+            }
+            // Player bullets don't hurt AI allies or other players
+            if (bulletOwner && bulletOwner.isPlayer && (tank.isAIAlly || tank.isPlayer)) {
+                return true;
+            }
+            // Enemy bullets can hurt players and AI allies - handled separately
+            if (bullet.owner === 'enemy' && (tank.isPlayer || tank.isAIAlly)) {
+                return true;
+            }
+            
+            return false;
+        };
+        
+        // Determine sound types based on tank type
+        const soundType = (tank.isPlayer || tank.isAIAlly) ? 'hurt' : 'hit';
+        const deathSoundType = tank.isAIAlly ? 'aiAlly' : (tank.isAI ? 'ai' : 'player');
+        
+        // Use common collision logic with Campaign-specific options
+        return game.collisions.handleBulletTankCollision(game, bullet, bulletIndex, tank, {
+            skipFriendlyFire: true,
+            friendlyFireCheck: friendlyFireCheck,
+            soundType: soundType,
+            deathSoundType: deathSoundType
+        });
+    },
+    
+    /**
+     * Handle bullet vs enemy collisions for Campaign mode
+     * @param {Object} game - Game instance
+     * @param {Object} bullet - Bullet object
+     * @param {number} bulletIndex - Index of bullet in bullets array
+     * @param {Object} enemy - Enemy object
+     * @returns {boolean} True if collision was handled
+     */
+    handleBulletEnemyCollision(game, bullet, bulletIndex, enemy) {
+        if (!enemy.isAlive) return false;
+        
+        // Enemy bullets should not hit enemies in campaign; skip processing here
+        if (bullet.owner === 'enemy') {
+            return false;
+        }
+        
+        // Check if objects are colliding using common collision detection
+        if (!game.collisions.checkCircularCollision(bullet, enemy)) {
+            return false;
+        }
+        
+        // Hit enemy!
+        game.collisions.applyDamage(enemy, 0, bullet); // Use bullet's damage
+        game.collisions.removeBullet(game, bulletIndex);
+
+        // Update player/ally shotsHit and enemyHits on successful hit
+        if (bullet.owner === 'player' || bullet.owner === 'aiAlly') {
+            const bulletOwner = game.tanks.find(t => t.id === bullet.ownerId);
+            game.collisions.updateHitStatistics(game, bulletOwner);
+            
+            // Also update enemyHits specifically
+            if (bulletOwner) {
+                const ownerStats = game.playerStats.get(bulletOwner.id);
+                if (ownerStats) {
+                    ownerStats.enemyHits++;
+                }
+            }
+        }
+
+        // Update statistics only when enemy dies
+        if (enemy.health <= 0 && (bullet.owner === 'player' || bullet.owner === 'aiAlly')) {
+            this.levelStats.enemiesKilled++;
+            
+            // Track kills per player/AI ally
+            const bulletOwner = game.tanks.find(t => t.id === bullet.ownerId);
+            if (bulletOwner) {
+                if (bulletOwner.isPlayer) {
+                    const currentKills = this.levelStats.playerKills.get(bulletOwner.id) || 0;
+                    this.levelStats.playerKills.set(bulletOwner.id, currentKills + 1);
+                } else if (bulletOwner.isAIAlly) {
+                    const currentKills = this.levelStats.aiAllyKills.get(bulletOwner.id) || 0;
+                    this.levelStats.aiAllyKills.set(bulletOwner.id, currentKills + 1);
+                }
+
+                // Also reflect in global playerStats for end-screen
+                const ownerStats = game.playerStats.get(bulletOwner.id);
+                if (ownerStats) {
+                    ownerStats.kills++;
+                    ownerStats.killsList.push('Enemy');
+                }
+            }
+        }
+        
+        // Play hit sound
+        game.collisions.playHitSound(enemy, 'hit');
+        
+        if (enemy.health <= 0) {
+            enemy.isAlive = false;
+            
+            // Play death sound
+            if (window.audioSystem) {
+                window.audioSystem.enemyDeath();
+            }
+        }
+        return true;
+    },
+    
+    /**
+     * Handle enemy bullet vs player/AI ally collisions for Campaign mode
+     * @param {Object} game - Game instance
+     * @param {Object} bullet - Bullet object
+     * @param {number} bulletIndex - Index of bullet in bullets array
+     * @param {Object} tank - Tank object
+     * @returns {boolean} True if collision was handled
+     */
+    handleEnemyBulletTankCollision(game, bullet, bulletIndex, tank) {
+        if (!tank.isAlive || !(tank.isPlayer || tank.isAIAlly)) return false;
+        
+        // Check if objects are colliding using common collision detection
+        if (!game.collisions.checkCircularCollision(bullet, tank)) {
+            return false;
+        }
+        
+        // Check invincibility using common method
+        if (game.collisions.isTankInvincible(tank)) {
+            game.collisions.removeBullet(game, bulletIndex);
+            return true;
+        }
+        
+        // Hit!
+        game.collisions.applyDamage(tank, 0, bullet); // Use bullet's damage
+        game.collisions.removeBullet(game, bulletIndex);
+        
+        // Campaign: only play hurt for players/AI allies (no hit sound)
+        game.collisions.playHitSound(tank, 'hurt');
+        
+        if (tank.health <= 0) {
+            tank.isAlive = false;
+            tank.deathTime = Date.now();
+            
+            // Play death sound (in campaign, AI allies use player death sound)
+            if (window.audioSystem) {
+                window.audioSystem.death();
+            }
+
+            // Update playerStats deaths for players and AI allies
+            const stats = game.playerStats.get(tank.id);
+            if (stats) {
+                stats.deaths++;
+                stats.deathTime = tank.deathTime;
+            }
+        }
+        return true;
     }
 };
 

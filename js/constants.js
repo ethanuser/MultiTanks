@@ -38,7 +38,7 @@ const GAME_CONFIG = {
     // Shooting settings
     SHOOT_COOLDOWN: 700, // milliseconds
     BULLET_SPEED: 6,
-    BULLET_SIZE: 4,
+    BULLET_SIZE: 5,
     BULLET_DAMAGE: 1,
     BULLET_MAX_LIFETIME_MS: 5000,
     
@@ -359,13 +359,14 @@ const CAMPAIGN_CONFIG = {
     
     // Camera settings
     CAMERA: {
-        followSpeed: 0.1, // How quickly camera follows players
+        followSpeed: 0.15, // How quickly camera follows players (smooth and responsive)
         zoom: 1.0,
-        minDistance: 100 // Minimum distance before camera starts following
+        minDistance: 10, // Minimum distance before camera starts following
+        deadZone: 0 // No dead zone - camera always follows smoothly
     },
     
     // Camera player weighting (players influence camera more than allies)
-    CAMERA_PLAYER_WEIGHT: 12,
+    CAMERA_PLAYER_WEIGHT: 200,
     
     // Difficulty settings (affects enemies only)
     DIFFICULTY: {

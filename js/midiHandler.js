@@ -327,6 +327,34 @@ class MidiHandler {
     }
 
     /**
+     * Reset all controls (send release events for all possible controls)
+     * This is useful when the game restarts to clear any stuck keys
+     */
+    resetAllControls() {
+        this.log('🔄 Resetting all controls...');
+        
+        // Send release events for all possible player controls
+        for (let playerIndex = 0; playerIndex < 4; playerIndex++) {
+            const controls = ['A_SHARP', 'A', 'B', 'C', 'C_SHARP', 'D', 'D_SHARP'];
+            
+            controls.forEach(control => {
+                const controlEvent = {
+                    playerIndex: playerIndex,
+                    control: control,
+                    isPressed: false,
+                    velocity: 0,
+                    noteNumber: 0, // Not applicable for reset
+                    timestamp: Date.now()
+                };
+                
+                this.triggerCallbacks(controlEvent);
+            });
+        }
+        
+        this.log('✅ All controls reset');
+    }
+
+    /**
      * Disconnect and cleanup
      */
     disconnect() {

@@ -4,8 +4,35 @@
 // Handles sound effects and background music
 
 const AudioSys = (() => {
-    let ctx = null, master = null, gain = 0.25, enabled = true;
-    let musicEl = null;
+    // Audio constants
+    const AUDIO_CONFIG = {
+        MASTER_GAIN: 0.2,
+        TONE_PEAK_GAIN: 0.48,
+        TONE2_PEAK_GAIN: 0.48,
+        KICK_PEAK_GAIN: 1.44,
+        HAT_PEAK_GAIN: 0.4,
+        BASS_PEAK_GAIN: 0.64,
+        MUSIC_VOLUME: 0.8,
+        TONE_ATTACK_TIME: 0.02,
+        TONE2_ATTACK_TIME: 0.015,
+        KICK_ATTACK_TIME: 0.008,
+        HAT_ATTACK_TIME: 0.004,
+        BASS_ATTACK_TIME: 0.02,
+        TONE_DURATION_OFFSET: 0.02,
+        KICK_DURATION: 0.25,
+        HAT_DURATION: 0.05,
+        BASS_DURATION: 0.25,
+        KICK_FREQ_START: 150,
+        KICK_FREQ_END: 55,
+        HAT_FREQ: 8000,
+        KICK_DECAY_TIME: 0.12,
+        KICK_DECAY_END: 0.22,
+        HAT_DECAY_TIME: 0.03,
+        BASS_DECAY_TIME: 0.22
+    };
+    
+    let ctx = null, master = null, gain = AUDIO_CONFIG.MASTER_GAIN, enabled = true;
+    let musicEl = null, musicEnabled = true;
     
     function ensure() { 
         if (!ctx) { 
@@ -30,12 +57,12 @@ const AudioSys = (() => {
         o.type = 'sine'; 
         o.frequency.value = freq; 
         g.gain.setValueAtTime(0.0001, ctx.currentTime); 
-        g.gain.linearRampToValueAtTime(0.06, ctx.currentTime + 0.02); 
+        g.gain.linearRampToValueAtTime(AUDIO_CONFIG.TONE_PEAK_GAIN, ctx.currentTime + AUDIO_CONFIG.TONE_ATTACK_TIME); 
         g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur); 
         o.connect(g); 
         g.connect(master); 
         o.start(); 
-        o.stop(ctx.currentTime + dur + 0.02); 
+        o.stop(ctx.currentTime + dur + AUDIO_CONFIG.TONE_DURATION_OFFSET); 
     }
     
     function playTone2(freq, dur = 0.1, mul = 0.6) { 
@@ -45,12 +72,12 @@ const AudioSys = (() => {
         o.type = 'square'; 
         o.frequency.value = freq; 
         g.gain.setValueAtTime(0.0001, ctx.currentTime); 
-        g.gain.linearRampToValueAtTime(0.06 * (mul || 1), ctx.currentTime + 0.015); 
+        g.gain.linearRampToValueAtTime(AUDIO_CONFIG.TONE2_PEAK_GAIN * (mul || 1), ctx.currentTime + AUDIO_CONFIG.TONE2_ATTACK_TIME); 
         g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur); 
         o.connect(g); 
         g.connect(master); 
         o.start(); 
-        o.stop(ctx.currentTime + dur + 0.02); 
+        o.stop(ctx.currentTime + dur + AUDIO_CONFIG.TONE_DURATION_OFFSET); 
     }
     
     function playKick() { 
@@ -58,15 +85,15 @@ const AudioSys = (() => {
         const o = ctx.createOscillator(); 
         const g = ctx.createGain(); 
         o.type = 'sine'; 
-        o.frequency.setValueAtTime(150, ctx.currentTime); 
-        o.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 0.12); 
+        o.frequency.setValueAtTime(AUDIO_CONFIG.KICK_FREQ_START, ctx.currentTime); 
+        o.frequency.exponentialRampToValueAtTime(AUDIO_CONFIG.KICK_FREQ_END, ctx.currentTime + AUDIO_CONFIG.KICK_DECAY_TIME); 
         g.gain.setValueAtTime(0.0001, ctx.currentTime); 
-        g.gain.linearRampToValueAtTime(0.18, ctx.currentTime + 0.008); 
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22); 
+        g.gain.linearRampToValueAtTime(AUDIO_CONFIG.KICK_PEAK_GAIN, ctx.currentTime + AUDIO_CONFIG.KICK_ATTACK_TIME); 
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + AUDIO_CONFIG.KICK_DECAY_END); 
         o.connect(g); 
         g.connect(master); 
         o.start(); 
-        o.stop(ctx.currentTime + 0.25); 
+        o.stop(ctx.currentTime + AUDIO_CONFIG.KICK_DURATION); 
     }
     
     function playHat() { 
@@ -74,14 +101,14 @@ const AudioSys = (() => {
         const o = ctx.createOscillator(); 
         const g = ctx.createGain(); 
         o.type = 'square'; 
-        o.frequency.value = 8000; 
+        o.frequency.value = AUDIO_CONFIG.HAT_FREQ; 
         g.gain.setValueAtTime(0.0001, ctx.currentTime); 
-        g.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.004); 
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.03); 
+        g.gain.linearRampToValueAtTime(AUDIO_CONFIG.HAT_PEAK_GAIN, ctx.currentTime + AUDIO_CONFIG.HAT_ATTACK_TIME); 
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + AUDIO_CONFIG.HAT_DECAY_TIME); 
         o.connect(g); 
         g.connect(master); 
         o.start(); 
-        o.stop(ctx.currentTime + 0.05); 
+        o.stop(ctx.currentTime + AUDIO_CONFIG.HAT_DURATION); 
     }
     
     function playBass(freq) { 
@@ -91,12 +118,12 @@ const AudioSys = (() => {
         o.type = 'triangle'; 
         o.frequency.value = freq; 
         g.gain.setValueAtTime(0.0001, ctx.currentTime); 
-        g.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.02); 
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22); 
+        g.gain.linearRampToValueAtTime(AUDIO_CONFIG.BASS_PEAK_GAIN, ctx.currentTime + AUDIO_CONFIG.BASS_ATTACK_TIME); 
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + AUDIO_CONFIG.BASS_DECAY_TIME); 
         o.connect(g); 
         g.connect(master); 
         o.start(); 
-        o.stop(ctx.currentTime + 0.25); 
+        o.stop(ctx.currentTime + AUDIO_CONFIG.BASS_DURATION); 
     }
     
     // =============================================================================
@@ -173,11 +200,12 @@ const AudioSys = (() => {
                 musicEl.pause(); 
             }
             musicEl = new Audio(musicPath); 
-            musicEl.volume = 0.05; 
+            musicEl.volume = AUDIO_CONFIG.MUSIC_VOLUME; 
         }
     }
     
     async function playMusic(trackName = 'battle_theme.mp3', shouldLoop = true) { 
+        if (!musicEnabled) return; // Don't play music if disabled
         _ensureMusic(trackName); 
         await resumeContext();
         if (musicEl) {
@@ -226,10 +254,20 @@ const AudioSys = (() => {
             enabled = !enabled; 
             return enabled; 
         },
+        toggleMusic() {
+            musicEnabled = !musicEnabled;
+            if (!musicEnabled && musicEl) {
+                musicEl.pause();
+            }
+            return musicEnabled;
+        },
         setMasterVolume,
         resume: resumeContext,
         isEnabled() { 
             return enabled; 
+        },
+        isMusicEnabled() {
+            return musicEnabled;
         },
         
         // Initialization

@@ -203,33 +203,45 @@ class GameRenderer {
     }
 
     renderUI() {
-        const { ctx } = this.game;
+        const { ctx, canvas } = this.game;
         ctx.fillStyle = '#ffffff';
         ctx.font = '16px Arial';
-        ctx.textAlign = 'left';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+
+        const padding = 10;
+        const lineHeight = 20;
+        const x = canvas.width - padding;
+
+        let lines = [];
+        let colors = [];
+        
         if (this.game.gameMode === GAME_MODES.TDM) {
             const redAlive = this.game.teams.red.filter(tank => tank.isAlive).length;
             const blueAlive = this.game.teams.blue.filter(tank => tank.isAlive).length;
-            ctx.fillStyle = GAME_CONFIG.TEAM_COLORS.RED;
-            ctx.fillText(`Red Team: ${redAlive}`, 10, 25);
-            ctx.fillStyle = GAME_CONFIG.TEAM_COLORS.BLUE;
-            ctx.fillText(`Blue Team: ${blueAlive}`, 10, 45);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(`Mode: TDM`, 10, 65);
+            lines = [`Red Team: ${redAlive}`, `Blue Team: ${blueAlive}`, 'Mode: TDM'];
+            colors = [GAME_CONFIG.TEAM_COLORS.RED, GAME_CONFIG.TEAM_COLORS.BLUE, '#ffffff'];
         } else if (this.game.gameMode === GAME_MODES.CAMPAIGN) {
-            // Campaign mode UI
             if (this.game.mode && this.game.mode.hudInfo) {
                 const hudInfo = this.game.mode.hudInfo(this.game);
-                hudInfo.lines.forEach((line, index) => {
-                    ctx.fillText(line, 10, 25 + (index * 20));
-                });
+                lines = hudInfo.lines || [];
             }
+            colors = lines.map(() => '#ffffff');
         } else {
-            ctx.fillText(`Players: ${this.game.numPlayers} | AI: ${this.game.numAIBots}`, 10, 25);
             const aliveTanks = this.game.tanks.filter(tank => tank.isAlive).length;
-            ctx.fillText(`Alive: ${aliveTanks}`, 10, 45);
-            ctx.fillText(`Mode: FFA`, 10, 65);
+            lines = [
+                `Players: ${this.game.numPlayers} | AI: ${this.game.numAIBots}`,
+                `Alive: ${aliveTanks}`,
+                'Mode: FFA'
+            ];
+            colors = ['#ffffff', '#ffffff', '#ffffff'];
         }
+
+        const startY = canvas.height - padding - (lines.length > 0 ? (lines.length - 1) * lineHeight : 0);
+        lines.forEach((line, index) => {
+            ctx.fillStyle = colors[index] || '#ffffff';
+            ctx.fillText(line, x, startY + index * lineHeight);
+        });
     }
     
     renderCampaignEnemies() {

@@ -35,8 +35,17 @@ class GamePowerups {
         this.game.powerupSpawnTimer -= deltaTime;
         if (this.game.powerupSpawnTimer <= 0) {
             this.spawn();
-            this.game.powerupSpawnTimer = GAME_CONFIG.POWERUP_SPAWN_INTERVAL_MIN +
-                Math.random() * (GAME_CONFIG.POWERUP_SPAWN_INTERVAL_MAX - GAME_CONFIG.POWERUP_SPAWN_INTERVAL_MIN);
+            
+            // Scale powerup spawn rate based on number of players/AIs
+            // Current rate is designed for 4 players, so scale accordingly
+            const totalTanks = this.game.numPlayers + this.game.numAIBots;
+            const scalingFactor = Math.max(0.5, Math.min(2.0, totalTanks / 4)); // Scale between 0.5x and 2.0x
+            
+            const scaledMinInterval = GAME_CONFIG.POWERUP_SPAWN_INTERVAL_MIN / scalingFactor;
+            const scaledMaxInterval = GAME_CONFIG.POWERUP_SPAWN_INTERVAL_MAX / scalingFactor;
+            
+            this.game.powerupSpawnTimer = scaledMinInterval +
+                Math.random() * (scaledMaxInterval - scaledMinInterval);
         }
 
         this.game.powerups.forEach((powerup, index) => {
