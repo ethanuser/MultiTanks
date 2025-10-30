@@ -1,6 +1,6 @@
 # MultiTanks
 
-Play at [ethannguyenuser.github.io/MultiTanks](https://ethannguyenuser.github.io/MultiTanks/)
+# PLAY HERE: [ethannguyenuser.github.io/MultiTanks](https://ethannguyenuser.github.io/MultiTanks/)
 
 MIDI/keyboard-controlled top-down tank battle game with multiple modes: Free For All, Team Deathmatch, and a 5-level Campaign.
 
