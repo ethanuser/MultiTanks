@@ -16,7 +16,7 @@ MIDI/keyboard-controlled top-down tank battle game with multiple modes: Free For
 - Tested with a Yamaha Digital Piano P-125 (USB MIDI) for input.
 
 ### Run Locally
-You can simply open `index.html` directly in your browser (double-click or drag it into a tab). No server required.
+You can simply clone the repo and open `index.html` directly in your browser (double-click or drag it into a tab). No server required.
 
 If your browser blocks local file access for audio/MIDI, you can optionally use a simple local server:
 
