@@ -280,6 +280,19 @@ class MenuSystem {
                                 <button id="sfxToggleBtn" class="menu-btn secondary">🔊 SFX: ON</button>
                             </div>
                         </div>
+
+                        <!-- Music Attribution -->
+                        <div class="menu-section" id="musicAttribution">
+                            <h2>🎼 Music Attribution</h2>
+                            <ul style="text-align: left; margin: 0 auto; max-width: 640px; line-height: 1.5; color: #e6edf3;">
+                                <li><strong>FFA</strong>: "Battlefield" from Super Smash Bros. Brawl</li>
+                                <li><strong>TDM</strong>: "Final Destination" from Super Smash Bros. Brawl</li>
+                                <li><strong>Menu</strong>: "Main Menu" from Super Smash Bros. Ultimate</li>
+                                <li><strong>Levels 1–5</strong>: "Balatro Theme" (from Balatro)</li>
+                                <li><strong>Victory</strong>: "Fire Emblem Theme" (arrangement from Super Smash Bros. Brawl)</li>
+                            </ul>
+                            <p style="margin-top: 10px; font-size: 12px; color: #b0b8c1;">All rights belong to their respective owners. This project is a non-commercial fan work with attribution.</p>
+                        </div>
                     </div>
                     
                     <!-- Player Select Screen -->
