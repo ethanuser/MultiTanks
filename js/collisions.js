@@ -7,46 +7,84 @@ class GameCollisions {
         this.game = game;
     }
 
+    /**
+     * Move a tank toward a position, sliding along walls and easing around corners
+     * so that tight gaps are forgiving to steer through with eight directions.
+     */
     moveTankWithSliding(tank, newX, newY, moveAngle) {
-        if (!this.checkTankObstacleCollision(tank, newX, newY)) {
-            tank.x = newX; tank.y = newY; tank.angle = moveAngle; return;
+        const map = this.game.map;
+        const hovering = this.game.hasStatus(tank, 'dash');
+        const fromX = tank.x;
+        const fromY = tank.y;
+
+        if (!map.tankBlocked(newX, fromY, tank.size, hovering)) {
+            tank.x = newX;
+        } else {
+            this.nudge(tank, 'y', newX - fromX, hovering);
         }
-        if (!this.checkTankObstacleCollision(tank, newX, tank.y)) {
-            tank.x = newX; tank.angle = moveAngle; return;
+        if (!map.tankBlocked(tank.x, newY, tank.size, hovering)) {
+            tank.y = newY;
+        } else {
+            this.nudge(tank, 'x', newY - fromY, hovering);
         }
-        if (!this.checkTankObstacleCollision(tank, tank.x, newY)) {
-            tank.y = newY; tank.angle = moveAngle; return;
-        }
-        const perpendicularAngle = moveAngle + Math.PI / 2;
-        const slideX = tank.x + Math.cos(perpendicularAngle) * tank.speed * GAME_CONFIG.AI_SLIDE_SPEED_MULTIPLIER;
-        const slideY = tank.y + Math.sin(perpendicularAngle) * tank.speed * GAME_CONFIG.AI_SLIDE_SPEED_MULTIPLIER;
-        if (!this.checkTankObstacleCollision(tank, slideX, slideY)) {
-            tank.x = slideX; tank.y = slideY; tank.angle = perpendicularAngle; return;
-        }
-        const oppositePerpendicularAngle = moveAngle - Math.PI / 2;
-        const slideX2 = tank.x + Math.cos(oppositePerpendicularAngle) * tank.speed * GAME_CONFIG.AI_SLIDE_SPEED_MULTIPLIER;
-        const slideY2 = tank.y + Math.sin(oppositePerpendicularAngle) * tank.speed * GAME_CONFIG.AI_SLIDE_SPEED_MULTIPLIER;
-        if (!this.checkTankObstacleCollision(tank, slideX2, slideY2)) {
-            tank.x = slideX2; tank.y = slideY2; tank.angle = oppositePerpendicularAngle;
-        }
+
+        if (moveAngle !== undefined && moveAngle !== null) tank.angle = moveAngle;
     }
 
-    checkTankObstacleCollision(tank, newX, newY) {
-        return this.game.obstacles.some(obstacle => {
-            if (obstacle.type === 'rock') {
-                const distance = Math.sqrt((newX - obstacle.x) ** 2 + (newY - obstacle.y) ** 2);
-                return distance < obstacle.radius + tank.size / 2;
-            } else {
-                const dx = Math.abs(newX - obstacle.x);
-                const dy = Math.abs(newY - obstacle.y);
-                return dx < (obstacle.width / 2 + tank.size / 2) && dy < (obstacle.height / 2 + tank.size / 2);
+    /**
+     * Blocked head on by only the corner of a wall? Ease sideways past it.
+     * @param {string} axis - The axis to slide along
+     * @param {number} push - The blocked movement on the other axis
+     */
+    nudge(tank, axis, push, hovering) {
+        if (!push) return;
+        const map = this.game.map;
+        const reach = GAME_CONFIG.CORNER_NUDGE;
+        const step = Math.min(Math.abs(push), 1.4);
+        for (const direction of [-1, 1]) {
+            const clearX = axis === 'x' ? tank.x + direction * reach : tank.x + push;
+            const clearY = axis === 'y' ? tank.y + direction * reach : tank.y + push;
+            if (!map.tankBlocked(clearX, clearY, tank.size, hovering)) {
+                if (axis === 'x') tank.x += direction * step;
+                else tank.y += direction * step;
+                return;
             }
-        });
+        }
     }
 
-    constrainTankToMap(tank) {
-        tank.x = Math.max(tank.size / 2, Math.min(GAME_CONFIG.MAP_WIDTH - tank.size / 2, tank.x));
-        tank.y = Math.max(tank.size / 2, Math.min(GAME_CONFIG.MAP_HEIGHT - tank.size / 2, tank.y));
+    /**
+     * Stop tanks from sitting on top of one another
+     */
+    separateTanks() {
+        const tanks = this.game.tanks;
+        const map = this.game.map;
+        for (let i = 0; i < tanks.length; i++) {
+            const a = tanks[i];
+            if (!a.isAlive || a.intangible) continue;
+            for (let j = i + 1; j < tanks.length; j++) {
+                const b = tanks[j];
+                if (!b.isAlive || b.intangible) continue;
+                // Friends give way to one another, or two would jam in a narrow gap
+                const friends = !this.game.areHostile(a, b);
+                const reach = (a.size + b.size) * (friends ? GAME_CONFIG.FRIEND_OVERLAP : 0.46);
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                if (Math.abs(dx) > reach || Math.abs(dy) > reach) continue;
+                const distance = Math.hypot(dx, dy) || 1;
+                if (distance >= reach) continue;
+                const push = (reach - distance) * GAME_CONFIG.TANK_PUSH_STRENGTH;
+                const nx = dx / distance;
+                const ny = dy / distance;
+                const moveA = a.immobile ? 0 : (b.immobile ? 2 : 1);
+                const moveB = b.immobile ? 0 : (a.immobile ? 2 : 1);
+                const ax = a.x - nx * push * moveA;
+                const ay = a.y - ny * push * moveA;
+                const bx = b.x + nx * push * moveB;
+                const by = b.y + ny * push * moveB;
+                if (!map.tankBlocked(ax, ay, a.size)) { a.x = ax; a.y = ay; }
+                if (!map.tankBlocked(bx, by, b.size)) { b.x = bx; b.y = by; }
+            }
+        }
     }
 
     /**
@@ -76,164 +114,141 @@ class GameCollisions {
      * @returns {boolean} True if tank is invincible
      */
     isTankInvincible(tank) {
-        return tank.powerups && tank.powerups.invincibility && tank.powerups.invincibility.length > 0;
+        return (tank.powerups && tank.powerups.invincibility && tank.powerups.invincibility.length > 0)
+            || this.game.hasStatus(tank, 'spawnProtect');
     }
 
     /**
-     * Apply damage to a tank
-     * @param {Object} tank - Tank to damage
-     * @param {number} damage - Amount of damage to apply
-     * @param {Object} bullet - Bullet causing damage (for damage property)
+     * Update bullets against walls and tanks
      */
-    applyDamage(tank, damage, bullet = null) {
-        const actualDamage = bullet ? bullet.damage : damage;
-        tank.health -= actualDamage;
+    updateBullets(deltaTime) {
+        const game = this.game;
+        const map = game.map;
+
+        game.bullets.forEach(bullet => {
+            if (bullet.dead) return;
+            bullet.life -= deltaTime;
+            if (bullet.life <= 0) {
+                bullet.dead = true;
+                if (bullet.onExpire) bullet.onExpire(bullet);
+                return;
+            }
+
+            if (bullet.homing) this.steerHomingBullet(bullet);
+            if (bullet.drag) {
+                bullet.vx *= bullet.drag;
+                bullet.vy *= bullet.drag;
+            }
+
+            const nextX = bullet.x + bullet.vx;
+            const nextY = bullet.y + bullet.vy;
+            const hitX = map.blocksBullet(map.tileAt(nextX, bullet.y));
+            const hitY = map.blocksBullet(map.tileAt(bullet.x, nextY));
+            const hitBoth = map.blocksBullet(map.tileAt(nextX, nextY));
+
+            if (hitX || hitY || hitBoth) {
+                this.hitTile(bullet, nextX, nextY, hitX, hitY);
+                if (bullet.dead) return;
+            }
+
+            bullet.x += bullet.vx;
+            bullet.y += bullet.vy;
+
+            for (const tank of game.tanks) {
+                if (!tank.isAlive || tank.intangible || !game.bulletHostileTo(bullet, tank)) continue;
+                const reach = tank.size / 2 + bullet.size / 2;
+                if (Math.abs(tank.x - bullet.x) > reach || Math.abs(tank.y - bullet.y) > reach) continue;
+                if (Math.hypot(tank.x - bullet.x, tank.y - bullet.y) >= reach) continue;
+                if (this.hitTank(bullet, tank)) return;
+            }
+        });
+
+        game.bullets = game.bullets.filter(bullet => !bullet.dead);
+    }
+
+    steerHomingBullet(bullet) {
+        const target = this.game.nearestHostile(bullet.ownerTank || bullet, bullet.x, bullet.y, 500);
+        if (!target) return;
+        const speed = Math.hypot(bullet.vx, bullet.vy);
+        const angle = Math.atan2(bullet.vy, bullet.vx);
+        const want = Math.atan2(target.y - bullet.y, target.x - bullet.x);
+        const turn = Math.max(-bullet.homing, Math.min(bullet.homing, normalizeAngle(want - angle)));
+        bullet.vx = Math.cos(angle + turn) * speed;
+        bullet.vy = Math.sin(angle + turn) * speed;
+    }
+
+    hitTile(bullet, nextX, nextY, hitX, hitY) {
+        const game = this.game;
+        const map = game.map;
+        const c = Math.floor(nextX / WORLD.TILE);
+        const r = Math.floor(nextY / WORLD.TILE);
+        if (map.at(c, r) === TILES.CRATE) game.damageTile(c, r, bullet.damage);
+
+        if (bullet.bounces > 0) {
+            bullet.bounces--;
+            if (bullet.ricochet) bullet.damage += GAME_CONFIG.POWERUP_BOUNCE_DAMAGE;
+            if (hitX || (!hitX && !hitY)) bullet.vx = -bullet.vx;
+            if (hitY || (!hitX && !hitY)) bullet.vy = -bullet.vy;
+            game.puff(bullet.x, bullet.y, '#ffffff', 2);
+        } else {
+            bullet.dead = true;
+            game.puff(bullet.x, bullet.y, bullet.color, 3);
+            if (bullet.onExpire) bullet.onExpire(bullet);
+        }
     }
 
     /**
-     * Update statistics for a successful hit
-     * @param {Object} game - Game instance
-     * @param {Object} bulletOwner - Tank that fired the bullet
+     * A bullet has reached a tank
+     * @returns {boolean} True if the bullet is used up
      */
-    updateHitStatistics(game, bulletOwner) {
-        if (bulletOwner) {
-            bulletOwner.shotsHit++;
-            const bulletOwnerStats = game.playerStats.get(bulletOwner.id);
-            if (bulletOwnerStats) {
-                bulletOwnerStats.shotsHit++;
+    hitTank(bullet, tank) {
+        const game = this.game;
+
+        // Dashing tanks slip straight through
+        if (game.hasStatus(tank, 'dash')) return false;
+
+        // Armored fronts turn shots aside
+        if (tank.frontArmor) {
+            const facing = tank.armorAngle ?? tank.turretAngle;
+            const incoming = Math.atan2(bullet.y - tank.y, bullet.x - tank.x);
+            if (Math.abs(normalizeAngle(incoming - facing)) < tank.frontArmor) {
+                bullet.dead = true;
+                game.spark(bullet.x, bullet.y);
+                game.floatIcon(bullet.x, bullet.y - 10, 'shield');
+                window.audioSystem.shieldBlock();
+                return true;
             }
         }
-    }
 
-    /**
-     * Handle tank death
-     * @param {Object} game - Game instance
-     * @param {Object} tank - Tank that died
-     * @param {Object} bulletOwner - Tank that killed the tank
-     * @param {string} soundType - Type of death sound ('player', 'ai', 'aiAlly')
-     */
-    handleTankDeath(game, tank, bulletOwner, soundType = 'player') {
-        tank.isAlive = false;
-        tank.deathTime = Date.now();
-        tank.killedBy = bulletOwner ? bulletOwner.name : 'Unknown';
-        
-        // Update kill/death statistics
-        if (bulletOwner) {
-            bulletOwner.kills++;
-            const bulletOwnerStats = game.playerStats.get(bulletOwner.id);
-            if (bulletOwnerStats) {
-                bulletOwnerStats.kills++;
-                bulletOwnerStats.killsList.push(tank.name);
-            }
-        }
-        
-        const tankStats = game.playerStats.get(tank.id);
-        if (tankStats) {
-            tankStats.deaths++;
-            tankStats.deathTime = tank.deathTime;
-            tankStats.killedBy = tank.killedBy;
-            tankStats.killedByList.push(tank.killedBy);
-        }
-        
-        // Play death sound
-        if (window.audioSystem) {
-            switch (soundType) {
-                case 'ai':
-                    window.audioSystem.enemyDeath();
-                    break;
-                case 'aiAlly':
-                case 'player':
-                default:
-                    window.audioSystem.death();
-                    break;
-            }
-        }
-    }
-
-    /**
-     * Play hit sound based on tank type
-     * @param {Object} tank - Tank that was hit
-     * @param {string} soundType - Type of sound ('hit', 'hurt')
-     */
-    playHitSound(tank, soundType = 'hit') {
-        if (window.audioSystem) {
-            if (soundType === 'hurt') {
-                window.audioSystem.hurt();
-            } else {
-                window.audioSystem.hit();
-            }
-        }
-    }
-
-    /**
-     * Remove bullet from game
-     * @param {Object} game - Game instance
-     * @param {number} bulletIndex - Index of bullet to remove
-     */
-    removeBullet(game, bulletIndex) {
-        game.bullets.splice(bulletIndex, 1);
-    }
-
-    /**
-     * Core bullet vs tank collision logic
-     * @param {Object} game - Game instance
-     * @param {Object} bullet - Bullet object
-     * @param {number} bulletIndex - Index of bullet in bullets array
-     * @param {Object} tank - Tank object
-     * @param {Object} options - Collision options
-     * @returns {boolean} True if collision was handled
-     */
-    handleBulletTankCollision(game, bullet, bulletIndex, tank, options = {}) {
-        // Default options
-        const {
-            skipFriendlyFire = false,
-            friendlyFireCheck = null,
-            damage = GAME_CONFIG.BULLET_DAMAGE,
-            soundType = 'hit',
-            deathSoundType = 'player'
-        } = options;
-
-        // Basic collision checks
-        if (!tank.isAlive || tank.id === bullet.ownerId) return false;
-        
-        // Check for friendly fire if specified
-        if (skipFriendlyFire && friendlyFireCheck) {
-            if (friendlyFireCheck(game, bullet, tank)) {
-                return false;
-            }
-        }
-        
-        // Check if objects are colliding
-        if (!this.checkCircularCollision(bullet, tank)) {
-            return false;
-        }
-        
-        // Check invincibility
-        if (this.isTankInvincible(tank)) {
-            this.removeBullet(game, bulletIndex);
+        if (this.isTankInvincible(tank) || game.absorbHit(tank)) {
+            bullet.dead = true;
+            game.spark(bullet.x, bullet.y);
+            window.audioSystem.shieldBlock();
             return true;
         }
-        
-        // Apply damage
-        this.applyDamage(tank, damage, bullet);
-        this.removeBullet(game, bulletIndex);
-        
-        // Update statistics
-        const bulletOwner = game.tanks.find(t => t.id === bullet.ownerId);
-        this.updateHitStatistics(game, bulletOwner);
-        
-        // Play hit sound
-        this.playHitSound(tank, soundType);
-        
-        // Handle death if health is 0 or below
-        if (tank.health <= 0) {
-            this.handleTankDeath(game, tank, bulletOwner, deathSoundType);
+
+        const owner = bullet.ownerTank || null;
+        if (owner) {
+            owner.shotsHit++;
+            const stats = game.playerStats.get(owner.id);
+            if (stats) stats.shotsHit++;
         }
-        
+
+        game.damageTank(tank, bullet.damage, { source: owner, bullet, type: 'bullet' });
+        if (bullet.knockback) {
+            game.knockback(tank, Math.atan2(bullet.vy, bullet.vx), bullet.knockback);
+        }
+        bullet.dead = true;
         return true;
+    }
+
+    /**
+     * Keep a tank inside the map (the walls usually do this)
+     */
+    constrainTankToMap(tank) {
+        tank.x = Math.max(tank.size / 2, Math.min(GAME_CONFIG.MAP_WIDTH - tank.size / 2, tank.x));
+        tank.y = Math.max(tank.size / 2, Math.min(GAME_CONFIG.MAP_HEIGHT - tank.size / 2, tank.y));
     }
 }
 
 window.GameCollisions = GameCollisions;
-
-

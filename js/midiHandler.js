@@ -8,9 +8,12 @@ class MidiHandler {
         this.isConnected = false;
         this.inputs = [];
         this.controlCallbacks = new Map(); // Map of control events to callback functions
+        this.noteListeners = [];           // Hear every key, mapped or not
         this.debugMode = false;
         this.keyboardFallback = false;
         this.keyboardMapping = this.createKeyboardMapping();
+        this.keyboardBound = false;
+        this.heldKeys = new Set();
     }
 
     /**
@@ -20,7 +23,10 @@ class MidiHandler {
      */
     async initialize(debugMode = false) {
         this.debugMode = debugMode;
-        
+
+        // The computer keyboard always works for player 1, piano or not
+        this.setupKeyboardListeners();
+
         try {
             if (typeof WebMidi === 'undefined') {
                 this.log('⚠️ WebMidi.js library not loaded, enabling keyboard fallback');
@@ -36,15 +42,13 @@ class MidiHandler {
                 return true;
             }
 
-            // Clear previous listeners
-            WebMidi.removeListener();
-
             // Add listeners to all inputs
             WebMidi.inputs.forEach((input, index) => {
                 this.log(`🔌 Connected to: ${input.name || `Input ${index + 1}`}`);
-                
-                input.addListener('noteon', 'all', (e) => this.handleNoteOn(e));
-                input.addListener('noteoff', 'all', (e) => this.handleNoteOff(e));
+
+                input.removeListener();
+                input.addListener('noteon', (e) => this.handleNoteOn(e));
+                input.addListener('noteoff', (e) => this.handleNoteOff(e));
             });
 
             this.isConnected = true;
@@ -66,12 +70,14 @@ class MidiHandler {
      */
     handleNoteOn(event) {
         const noteNumber = event.note.number;
-        const velocity = event.velocity;
-        
+        // How hard the key was struck, from 0 to 1
+        const velocity = event.note.attack ?? event.value ?? event.velocity ?? 0.6;
+
         if (this.debugMode) {
             this.log(`🎹 Note ON: ${noteNumber} (${event.note.name}) - Velocity: ${velocity.toFixed(2)}`);
         }
 
+        this.noteListeners.forEach(listener => listener(noteNumber, true, velocity));
         this.processControl(noteNumber, true, velocity);
     }
 
@@ -81,11 +87,12 @@ class MidiHandler {
      */
     handleNoteOff(event) {
         const noteNumber = event.note.number;
-        
+
         if (this.debugMode) {
             this.log(`🔇 Note OFF: ${noteNumber} (${event.note.name}) - Released`);
         }
 
+        this.noteListeners.forEach(listener => listener(noteNumber, false, 0));
         this.processControl(noteNumber, false, 0);
     }
 
@@ -121,15 +128,30 @@ class MidiHandler {
     }
 
     /**
-     * Register a callback for control events
-     * @param {string} eventType - Event type ('movement', 'turret', 'all')
+     * Register a callback for control events, replacing any under the same tag so
+     * that a new game does not stack up on top of the last one's listeners
+     * @param {string} eventType - Event type ('movement', 'turret', 'harmony', 'all')
      * @param {Function} callback - Callback function
+     * @param {string} tag - Identifies who is listening
      */
-    onControl(eventType, callback) {
+    onControl(eventType, callback, tag = null) {
         if (!this.controlCallbacks.has(eventType)) {
             this.controlCallbacks.set(eventType, []);
         }
-        this.controlCallbacks.get(eventType).push(callback);
+        const list = this.controlCallbacks.get(eventType);
+        if (tag) {
+            const existing = list.findIndex(entry => entry.tag === tag);
+            if (existing >= 0) list.splice(existing, 1);
+        }
+        list.push({ callback, tag });
+    }
+
+    /**
+     * Listen to every note, whether or not it maps to a control
+     * @param {Function} listener - Called with (noteNumber, isPressed, velocity)
+     */
+    onNote(listener) {
+        this.noteListeners.push(listener);
     }
 
     /**
@@ -138,7 +160,7 @@ class MidiHandler {
      */
     triggerCallbacks(controlEvent) {
         const callbacks = this.controlCallbacks.get('all') || [];
-        callbacks.forEach(callback => callback(controlEvent));
+        callbacks.forEach(entry => entry.callback(controlEvent));
 
         // Determine control type and trigger specific callbacks
         let controlType = null;
@@ -146,20 +168,14 @@ class MidiHandler {
             controlType = 'movement';
         } else if (isTurretControl(controlEvent.control)) {
             controlType = 'turret';
+        } else if (isHarmonyControl(controlEvent.control)) {
+            controlType = 'harmony';
         }
 
         if (controlType) {
             const typeCallbacks = this.controlCallbacks.get(controlType) || [];
-            typeCallbacks.forEach(callback => callback(controlEvent));
+            typeCallbacks.forEach(entry => entry.callback(controlEvent));
         }
-    }
-
-    /**
-     * Get connection status
-     * @returns {boolean} Connection status
-     */
-    getConnectionStatus() {
-        return this.isConnected;
     }
 
     /**
@@ -207,11 +223,26 @@ class MidiHandler {
             'KeyA': { player: 0, control: 'A' },       // Left
             'KeyS': { player: 0, control: 'B' },       // Down
             'KeyD': { player: 0, control: 'C' },       // Right
-            'ArrowLeft': { player: 0, control: 'C_SHARP' },  // Aim Left
-            'ArrowRight': { player: 0, control: 'D_SHARP' }, // Aim Right
-            'Space': { player: 0, control: 'D' },      // Shoot
             'ArrowUp': { player: 0, control: 'A_SHARP' },    // Up (alternative)
             'ArrowDown': { player: 0, control: 'B' },        // Down (alternative)
+            'ArrowLeft': { player: 0, control: 'C_SHARP' },  // Aim Left
+            'ArrowRight': { player: 0, control: 'D_SHARP' }, // Aim Right
+
+            'Space': { player: 0, control: 'D' },
+            'Enter': { player: 0, control: 'D' }, // Also turns dialogue pages
+
+            // Number keys are the five harmony keys, for playing melodies
+            'Digit1': { player: 0, control: 'E' },
+            'Digit2': { player: 0, control: 'F' },
+            'Digit3': { player: 0, control: 'F_SHARP' },
+            'Digit4': { player: 0, control: 'G' },
+            'Digit5': { player: 0, control: 'G_SHARP' },
+
+            // Chord shortcuts
+            'KeyQ': { player: 0, chord: 'shield' },
+            'ShiftLeft': { player: 0, chord: 'dash' },
+            'KeyE': { player: 0, chord: 'blast' },
+            'KeyF': { player: 0, chord: 'heal' }
         };
     }
 
@@ -222,7 +253,6 @@ class MidiHandler {
         this.keyboardFallback = true;
         this.isConnected = false;
         this.inputs = [];
-        this.setupKeyboardListeners();
         this.log('⌨️ Keyboard fallback enabled');
     }
 
@@ -230,20 +260,12 @@ class MidiHandler {
      * Setup keyboard event listeners
      */
     setupKeyboardListeners() {
-        // Remove existing listeners
-        this.removeKeyboardListeners();
-        
-        // Add new listeners
+        if (this.keyboardBound) return;
+        this.keyboardBound = true;
         document.addEventListener('keydown', (e) => this.handleKeyDown(e));
         document.addEventListener('keyup', (e) => this.handleKeyUp(e));
-    }
-
-    /**
-     * Remove keyboard event listeners
-     */
-    removeKeyboardListeners() {
-        document.removeEventListener('keydown', this.handleKeyDown);
-        document.removeEventListener('keyup', this.handleKeyUp);
+        // Keys released while the window is out of focus would otherwise stick
+        window.addEventListener('blur', () => this.resetAllControls());
     }
 
     /**
@@ -251,28 +273,15 @@ class MidiHandler {
      * @param {KeyboardEvent} event - Keyboard event
      */
     handleKeyDown(event) {
-        if (!this.keyboardFallback) return;
-        
         const mapping = this.keyboardMapping[event.code];
-        if (!mapping) return;
+        if (!mapping || !window.game) return;
+        if (event.target && event.target.tagName === 'INPUT') return;
 
         event.preventDefault();
-        
-        if (this.debugMode) {
-            this.log(`⌨️ Key DOWN: ${event.code} - Player ${mapping.player} ${mapping.control}`);
-        }
+        if (event.repeat || this.heldKeys.has(event.code)) return;
+        this.heldKeys.add(event.code);
 
-        // Create control event similar to MIDI
-        const controlEvent = {
-            playerIndex: mapping.player,
-            control: mapping.control,
-            isPressed: true,
-            velocity: 1.0,
-            noteNumber: 0, // Not applicable for keyboard
-            timestamp: Date.now()
-        };
-
-        this.triggerCallbacks(controlEvent);
+        this.emitKeyboard(mapping, true);
     }
 
     /**
@@ -280,28 +289,29 @@ class MidiHandler {
      * @param {KeyboardEvent} event - Keyboard event
      */
     handleKeyUp(event) {
-        if (!this.keyboardFallback) return;
-        
         const mapping = this.keyboardMapping[event.code];
         if (!mapping) return;
 
-        event.preventDefault();
-        
-        if (this.debugMode) {
-            this.log(`⌨️ Key UP: ${event.code} - Player ${mapping.player} ${mapping.control}`);
-        }
+        this.heldKeys.delete(event.code);
+        if (!window.game) return;
 
-        // Create control event similar to MIDI
-        const controlEvent = {
+        event.preventDefault();
+
+        // Space and Enter share a control: keep firing if the other is held
+        if (mapping.control === 'D' && (this.heldKeys.has('Space') || this.heldKeys.has('Enter'))) return;
+        this.emitKeyboard(mapping, false);
+    }
+
+    emitKeyboard(mapping, isPressed) {
+        this.triggerCallbacks({
             playerIndex: mapping.player,
-            control: mapping.control,
-            isPressed: false,
-            velocity: 0,
+            control: mapping.control || `CHORD_${mapping.chord}`,
+            chord: mapping.chord || null,
+            isPressed: isPressed,
+            velocity: isPressed ? 0.6 : 0,
             noteNumber: 0, // Not applicable for keyboard
             timestamp: Date.now()
-        };
-
-        this.triggerCallbacks(controlEvent);
+        });
     }
 
     /**
@@ -320,7 +330,7 @@ class MidiHandler {
         if (this.isConnected) {
             return `MIDI (${this.inputs.length} device${this.inputs.length !== 1 ? 's' : ''})`;
         } else if (this.keyboardFallback) {
-            return 'Keyboard (WASD + Arrow Keys)';
+            return 'Keyboard';
         } else {
             return 'None';
         }
@@ -332,25 +342,22 @@ class MidiHandler {
      */
     resetAllControls() {
         this.log('🔄 Resetting all controls...');
-        
+        this.heldKeys.clear();
+
         // Send release events for all possible player controls
         for (let playerIndex = 0; playerIndex < 4; playerIndex++) {
-            const controls = ['A_SHARP', 'A', 'B', 'C', 'C_SHARP', 'D', 'D_SHARP'];
-            
-            controls.forEach(control => {
-                const controlEvent = {
+            Object.keys(MIDI_CONFIG.NOTE_OFFSETS).forEach(control => {
+                this.triggerCallbacks({
                     playerIndex: playerIndex,
                     control: control,
                     isPressed: false,
                     velocity: 0,
                     noteNumber: 0, // Not applicable for reset
                     timestamp: Date.now()
-                };
-                
-                this.triggerCallbacks(controlEvent);
+                });
             });
         }
-        
+
         this.log('✅ All controls reset');
     }
 
@@ -358,10 +365,9 @@ class MidiHandler {
      * Disconnect and cleanup
      */
     disconnect() {
-        if (typeof WebMidi !== 'undefined') {
-            WebMidi.removeListener();
+        if (typeof WebMidi !== 'undefined' && WebMidi.enabled) {
+            WebMidi.inputs.forEach(input => input.removeListener());
         }
-        this.removeKeyboardListeners();
         this.isConnected = false;
         this.keyboardFallback = false;
         this.inputs = [];
@@ -375,3 +381,63 @@ class MidiHandler {
 // =============================================================================
 // Create a global instance that can be used throughout the application
 window.midiHandler = new MidiHandler();
+
+// =============================================================================
+// PROMPTS
+// =============================================================================
+// Anything on screen that names a control comes through here, so that it speaks
+// in terms of whatever the player actually has under their hands. Text can carry
+// tokens like {shoot}, {chord:shield} or {melody:rally}, filled in by fill().
+const Prompts = {
+    usingPiano() {
+        return !!(window.midiHandler && window.midiHandler.isConnected);
+    },
+
+    drive() {
+        return this.usingPiano() ? 'A, A#, B and C' : 'W A S D';
+    },
+
+    aim() {
+        return this.usingPiano() ? 'C# and D#' : 'the Left and Right arrows';
+    },
+
+    shoot() {
+        return this.usingPiano() ? 'D' : 'Space';
+    },
+
+    /**
+     * The key for one of the five harmony keys
+     * @param {number} number - 1 to 5
+     */
+    harmonyKey(number) {
+        return this.usingPiano() ? MIDI_CONFIG.NOTE_LABELS[HARMONY_KEYS[number - 1]] : String(number);
+    },
+
+    harmonyKeys() {
+        return this.usingPiano() ? 'E, F, F#, G and G#' : 'the number keys 1 to 5';
+    },
+
+    chord(name) {
+        const chord = HARMONY_CONFIG.CHORDS[name];
+        if (!this.usingPiano()) return chord.keyHint;
+        return `${chord.keys.map(key => this.harmonyKey(key)).join(' + ')} together`;
+    },
+
+    tune(keys) {
+        return keys.map(key => this.harmonyKey(key)).join(', ');
+    },
+
+    melody(name) {
+        return this.tune(HARMONY_CONFIG.MELODIES[name].keys);
+    },
+
+    fill(text) {
+        return text.replace(/\{(\w+)(?::(\w+))?\}/g, (token, kind, name) => {
+            if (kind === 'chord') return this.chord(name);
+            if (kind === 'melody') return this.melody(name);
+            return this[kind] ? this[kind]() : token;
+        });
+    }
+};
+
+window.Prompts = Prompts;

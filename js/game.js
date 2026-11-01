@@ -1,7 +1,26 @@
 // =============================================================================
 // MULTITANKS GAME ENGINE
 // =============================================================================
-// Main game logic, rendering, and state management
+// Main game logic and state management
+
+/**
+ * Keeps time in beats, on the game's own clock. The chiptune sequencer plays from
+ * this position, so the beat the game judges is exactly the one being heard.
+ */
+class BeatClock {
+    constructor(bpm) {
+        this.bpm = bpm;
+        this.position = 0;
+    }
+
+    get msPerBeat() {
+        return 60000 / this.bpm;
+    }
+
+    advance(deltaTime) {
+        this.position += deltaTime / this.msPerBeat;
+    }
+}
 
 class MultiTanksGame {
     constructor() {
@@ -10,34 +29,62 @@ class MultiTanksGame {
         this.gameState = GAME_STATES.MENU;
         this.tanks = [];
         this.bullets = [];
-        this.obstacles = [];
         this.players = [];
         this.aiBots = [];
         this.powerups = [];
+        this.map = null;
         this.lastTime = 0;
+        this.accumulator = 0;
         this.animationId = null;
-        this.powerupSpawnTimer = 0;
-        
+        this.powerupSpawnTimer = 3000;
+
+        // Game time only moves while the game does, so pausing is always safe
+        this.clock = 0;
+        this.pace = 1;           // How much faster than real time the game runs
+        this.beat = new BeatClock(120);
+        this.lastBeatIndex = 0;
+        this.beatless = false;   // True while a recording plays
+        this.beatHitUntil = 0;   // Lights the beat bar after a shot on the beat
+
         // Game settings
         this.numPlayers = 1;
         this.numAIBots = 3;
         this.gameMode = GAME_MODES.FFA;
+        this.botSkill = 'NORMAL';
         this.isPaused = false;
+        this.gameEnding = false;
         this.gameStartTime = 0;
         this.gameEndTime = 0;
-        
+        this.nextTankId = 100;
+
         // Team settings
         this.teams = {
             red: [],
             blue: []
         };
-        
+
         // Statistics tracking
         this.playerStats = new Map();
-        
+
         // Input tracking
         this.activeControls = new Map(); // Track which controls are currently pressed
-        
+        this.harmony = [];
+
+        // Effects
+        this.particles = [];
+        this.rings = [];
+        this.floaters = [];
+        this.delayed = [];
+        this.telegraphs = [];
+        this.shakeAmount = 0;
+        this.flashColor = null;
+        this.flashUntil = 0;
+        this.dialog = null;
+        this.banner = null;
+        this.keypadGlow = new Map();
+
+        this.camera = { x: 0, y: 0 };
+
         // Helper modules
         this.renderer = null;
         this.powerupsManager = null;
@@ -52,22 +99,20 @@ class MultiTanksGame {
      * @param {string} gameMode - Game mode (FFA or TDM)
      * @param {Object} teamAssignments - Player team assignments for TDM
      * @param {Object} aiTeamDistribution - AI team distribution for TDM
+     * @param {string} botSkill - Key into BOT_SKILLS
      */
-    async initialize(canvas, numPlayers = 1, numAIBots = 3, gameMode = GAME_MODES.FFA, teamAssignments = {}, aiTeamDistribution = null) {
+    async initialize(canvas, numPlayers = 1, numAIBots = 3, gameMode = GAME_MODES.FFA, teamAssignments = {}, aiTeamDistribution = null, botSkill = 'NORMAL') {
         // Reset all controls to clear any stuck keys from previous games
         if (window.midiHandler) {
             window.midiHandler.resetAllControls();
         }
-        
+
         // Clear active controls to ensure clean state
         this.activeControls.clear();
-        
+
         // Ensure any prior game loop is stopped before re-initializing
-        if (this.animationId) {
-            cancelAnimationFrame(this.animationId);
-            this.animationId = null;
-        }
-        
+        this.stopGameLoop();
+
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.numPlayers = Math.max(GAME_CONFIG.MIN_PLAYERS, Math.min(GAME_CONFIG.MAX_PLAYERS, numPlayers));
@@ -75,69 +120,115 @@ class MultiTanksGame {
         this.gameMode = gameMode;
         this.teamAssignments = teamAssignments;
         this.aiTeamDistribution = aiTeamDistribution;
-        this.gameStartTime = Date.now();
-        
+        this.botSkill = botSkill;
+        this.gameStartTime = this.clock;
+        this.gameEnding = false;
+
         // Resolve active game mode
         this.mode = window.modeManager ? window.modeManager.getMode(this.gameMode) : null;
-        
+
         // Ensure total doesn't exceed maximum
         const totalTanks = this.numPlayers + this.numAIBots;
         if (totalTanks > GAME_CONFIG.MAX_TOTAL_TANKS) {
             this.numAIBots = GAME_CONFIG.MAX_TOTAL_TANKS - this.numPlayers;
         }
-        
-        // Set canvas size - use actual window dimensions
-        const actualWidth = window.innerWidth;
-        const actualHeight = window.innerHeight;
-        
-        this.canvas.width = actualWidth;
-        this.canvas.height = actualHeight;
-        
-        // Update game config with actual dimensions
-        GAME_CONFIG.MAP_WIDTH = actualWidth;
-        GAME_CONFIG.MAP_HEIGHT = actualHeight;
-        
+
+        this.handleResize();
+        this.harmony = Array.from({ length: 4 }, (_, i) => new HarmonyInput(this, i));
+
         // Initialize game objects
         if (this.mode && this.mode.assignTeams) {
             this.mode.assignTeams(this);
         }
-        
-        // Only initialize tanks for non-campaign modes (campaign handles its own tank creation)
-        if (this.gameMode !== GAME_MODES.CAMPAIGN) {
-            this.initializeTanks();
-        }
-        
-        // Only generate obstacles for non-campaign modes
-        if (this.gameMode !== GAME_MODES.CAMPAIGN) {
-            this.generateObstacles();
-        }
-        
-        this.setupMIDIInput();
-        
-        // Initialize AI behavior system
-        window.aiBehavior = new AIBehavior(this);
-        
+
         // Initialize helper modules
         this.renderer = new GameRenderer(this);
         this.powerupsManager = new GamePowerups(this);
         this.collisions = new GameCollisions(this);
-        
-        // Start game loop (except for campaign mode which needs special initialization)
-        if (this.gameMode !== GAME_MODES.CAMPAIGN) {
-            this.gameState = GAME_STATES.PLAYING;
-            this.lastTime = performance.now();
-            this.gameLoop();
-        } else {
-            // For campaign mode, start in paused state until level is initialized
+        window.aiBehavior = new AIBehavior(this);
+
+        this.setupMIDIInput();
+
+        if (this.gameMode === GAME_MODES.CAMPAIGN) {
+            // The campaign builds its own stages
             this.gameState = GAME_STATES.PAUSED;
+            return;
         }
-        
-        // Start background music based on mode
-        if (window.audioSystem) {
-            const track = (this.mode && this.mode.musicTrack) ? this.mode.musicTrack(this) : (this.gameMode === GAME_MODES.TDM ? 'tdm.mp3' : 'ffa.mp3');
-            window.audioSystem.playMusic(track, true);
-            window.audioSystem.gameStart();
+
+        this.setupArena();
+        this.startMusicForArena();
+        window.audioSystem.gameStart();
+        this.gameState = GAME_STATES.PLAYING;
+        this.startGameLoop();
+    }
+
+    startMusicForArena() {
+        this.lastBeatIndex = 0;
+        this.beatless = window.audioSystem.getArenaMusic() === 'recordings';
+        if (this.beatless) {
+            this.beat = new BeatClock(GAME_CONFIG.UNSYNCED_BPM);
+            window.audioSystem.playMusic(this.mode.musicTrack(this), true);
+        } else {
+            this.beat = new BeatClock(window.audioSystem.playSong(this.mode.song));
         }
+    }
+
+    /**
+     * Where in the beat the player is hearing right now, which trails the game by
+     * however long the sound takes to reach them
+     */
+    heardBeat() {
+        const latencyMs = window.audioSystem.outputLatency() * 1000 * this.pace;
+        return this.beat.position - latencyMs / this.beat.msPerBeat;
+    }
+
+    /**
+     * Is this moment on the beat? The window is real time, so a faster tempo does
+     * not also make it narrower.
+     */
+    isOnBeat() {
+        if (this.beatless) return false;
+        const position = this.heardBeat();
+        const offset = Math.abs(position - Math.round(position)) * this.beat.msPerBeat;
+        return offset <= GAME_CONFIG.BEAT_WINDOW_MS * this.pace;
+    }
+
+    /**
+     * Fit the low-resolution canvas to the window. The world always shows about the
+     * same amount of map, whatever the size of the window.
+     */
+    handleResize() {
+        if (!this.canvas) return;
+        const scale = Math.max(2, Math.round(window.innerHeight / WORLD.TARGET_VIEW_H));
+        this.canvas.width = Math.ceil(window.innerWidth / scale);
+        this.canvas.height = Math.ceil(window.innerHeight / scale);
+        this.viewScale = scale;
+        this.viewW = this.canvas.width;
+        this.viewH = this.canvas.height;
+        if (this.ctx) this.ctx.imageSmoothingEnabled = false;
+    }
+
+    /**
+     * Load a map into the game
+     * @param {TileMap} map - The map to play on
+     */
+    setMap(map) {
+        this.map = map;
+        MapArt.bake(map);
+        GAME_CONFIG.MAP_WIDTH = map.width;
+        GAME_CONFIG.MAP_HEIGHT = map.height;
+    }
+
+    /**
+     * Build the arena for FFA and TDM
+     */
+    setupArena() {
+        const viewCols = Math.floor(this.viewW / WORLD.TILE_PX);
+        const viewRows = Math.floor((this.viewH - HUD_TOP_PX - HUD_BOTTOM_PX) / WORLD.TILE_PX);
+        this.setMap(ArenaGenerator.generate(viewCols, viewRows, this.arenaTheme || null));
+        this.initializeTanks();
+        MapArt.bake(this.map); // Spawns clear space around themselves
+        this.centerCamera();
     }
 
     /**
@@ -150,6 +241,13 @@ class MultiTanksGame {
         }
     }
 
+    startGameLoop() {
+        this.stopGameLoop();
+        this.lastTime = performance.now();
+        this.accumulator = 0;
+        this.animationId = requestAnimationFrame((time) => this.gameLoop(time));
+    }
+
     /**
      * Initialize tanks (players + AI bots)
      */
@@ -157,69 +255,93 @@ class MultiTanksGame {
         this.tanks = [];
         this.players = [];
         this.aiBots = [];
-        
-        // Calculate spawn positions via mode (or fallback)
-        const spawnPositions = this.mode && this.mode.calculateSpawnPositions ? this.mode.calculateSpawnPositions(this) : [];
-        
+
+        // Calculate spawn positions via mode
+        const spawnPositions = this.mode.calculateSpawnPositions(this);
+
         // Create human players
         for (let i = 0; i < this.numPlayers; i++) {
-            const tank = this.createTank(spawnPositions[i], i, false); // false = human player
+            const tank = this.mode.createTank(this, spawnPositions[i], i, false); // false = human player
             this.tanks.push(tank);
             this.players.push(tank);
         }
-        
+
         // Create AI bots
         for (let i = this.numPlayers; i < this.numPlayers + this.numAIBots; i++) {
-            const tank = this.createTank(spawnPositions[i], i, true); // true = AI bot
+            const tank = this.mode.createTank(this, spawnPositions[i], i, true); // true = AI bot
             this.tanks.push(tank);
             this.aiBots.push(tank);
         }
-    }
 
-    
+        this.tanks.forEach(tank => {
+            tank.turretAngle = Math.atan2(this.map.height / 2 - tank.y, this.map.width / 2 - tank.x);
+            tank.angle = tank.turretAngle;
+            this.setStatus(tank, 'spawnProtect', 1500);
+        });
+    }
 
     /**
      * Create a tank object
-     * @param {Object} position - Spawn position
-     * @param {number} playerIndex - Player index (0-7)
-     * @param {boolean} isAI - Whether this is an AI bot
+     * @param {Object} options - Anything that differs from a standard tank
      * @returns {Object} Tank object
      */
-    createTank(position, playerIndex, isAI, team = null) {
-        // Use mode-specific tank creation if available
-        if (this.mode && this.mode.createTank) {
-            return this.mode.createTank(this, position, playerIndex, isAI);
-        }
-        
-        // Fallback to basic tank creation
+    createTank(options) {
         const tank = {
-            id: playerIndex,
-            x: position.x,
-            y: position.y,
-            angle: Math.random() * Math.PI * 2, // Random initial rotation
+            id: options.id ?? this.nextTankId++,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            kx: 0,
+            ky: 0,
+            angle: 0,
             turretAngle: 0,
             health: GAME_CONFIG.TANK_HEALTH,
             maxHealth: GAME_CONFIG.TANK_HEALTH,
-            color: TANK_COLORS[playerIndex % TANK_COLORS.length],
-            isAI: isAI,
+            palette: 'blue',
+            chassis: 'player',
+            eyes: 'cute',
+            isAI: false,
+            isPlayer: false,
+            isAIAlly: false,
             team: null,
-            name: isAI ? `Bot ${playerIndex - this.numPlayers + 1}` : `Player ${playerIndex + 1}`,
-            lastShot: 0,
+            faction: null,
+            name: 'Tank',
+            nextShotAt: 0,
             size: GAME_CONFIG.TANK_SIZE,
             speed: GAME_CONFIG.TANK_SPEED,
             turretLength: GAME_CONFIG.TURRET_LENGTH,
             turretRotationSpeed: GAME_CONFIG.TURRET_ROTATION_SPEED,
             isAlive: true,
-            
+
+            // Harmony
+            meter: GAME_CONFIG.METER_START,
+            groove: 0,
+            abilityReadyAt: 0,
+            cooldowns: {},       // When each chord and melody can be played again
+            shieldHits: 0,
+            tenutoBeats: 0,
+            pendingShot: null,
+
+            // Timed effects
+            status: {},
+            hurtUntil: 0,
+            recoilUntil: 0,
+            spikeReadyAt: 0,
+            stringHitBeat: -1,
+            lastTile: -1,
+            lastSafeX: 0,
+            lastSafeY: 0,
+            distance: 0,
+
             // Statistics
             shotsFired: 0,
             shotsHit: 0,
             kills: 0,
             deaths: 0,
-            timeAlive: 0,
             deathTime: 0,
             killedBy: null,
-            
+
             // Powerups (arrays for stacking)
             powerups: {
                 invincibility: [],
@@ -228,134 +350,70 @@ class MultiTanksGame {
                 spreadShot: [],
                 bouncingBullets: []
             },
-            
+
             // AI-specific properties
-            aiTarget: null,
-            aiState: 'patrol', // 'patrol', 'chase', 'attack'
-            aiTimer: 0,
-            aiDirection: Math.random() * Math.PI * 2,
-            aiOrbitDirection: Math.random() < 0.5 ? 1 : -1, // 1 for clockwise, -1 for counterclockwise
-            aiOrbitAngle: 0, // Current orbit angle around target
-            aiRetreatEndTime: 0, // When to stop retreating
-            aiLastTargetX: 0, // Last known target X position for movement tracking
-            aiLastTargetY: 0, // Last known target Y position for movement tracking
-            aiTargetVelocityX: 0, // Target's X velocity
-            aiTargetVelocityY: 0, // Target's Y velocity
-            aiPowerupChaseStartTime: 0, // When AI started chasing current powerup
-            aiCurrentPowerupId: null, // ID of powerup currently being chased
-            aiPowerupCooldownEndTime: 0 // When AI can start chasing powerups again
+            ai: null,
+            ...options
         };
-        
+        tank.lastSafeX = tank.x;
+        tank.lastSafeY = tank.y;
+
         // Initialize statistics
-        this.playerStats.set(tank.id, {
-            name: tank.name,
-            isAI: tank.isAI,
-            team: tank.team,
-            shotsFired: 0,
-            shotsHit: 0,
-            enemyHits: 0,
-            kills: 0,
-            deaths: 0,
-            timeAlive: 0,
-            deathTime: 0,
-            killedBy: null,
-            killsList: [],
-            killedByList: [],
-            powerupsCollected: 0
-        });
-        
+        if (!tank.enemyType && !tank.boss && !tank.isBuddy) {
+            this.playerStats.set(tank.id, {
+                name: tank.name,
+                isAI: tank.isAI,
+                team: tank.team,
+                palette: tank.palette,
+                shotsFired: 0,
+                shotsHit: 0,
+                damageDealt: 0,
+                kills: 0,
+                deaths: 0,
+                deathTime: 0,
+                killedBy: null,
+                killsList: [],
+                powerupsCollected: 0,
+                abilitiesUsed: 0,
+                bestGroove: 0
+            });
+        }
+
         return tank;
     }
 
     /**
-     * Generate random obstacles on the map
+     * Summon a little ally for a tank
+     * @param {Object} owner - Tank that called for help
+     * @param {number} side - Which side of the tank it arrives on, -1 to 1
      */
-    generateObstacles() {
-        this.obstacles = [];
-        const numObstacles = Math.floor(Math.random() * (GAME_CONFIG.MAX_OBSTACLES - GAME_CONFIG.MIN_OBSTACLES + 1)) + GAME_CONFIG.MIN_OBSTACLES;
-        
-        for (let i = 0; i < numObstacles; i++) {
-            let obstacle;
-            let attempts = 0;
-            const maxAttempts = GAME_CONFIG.AI_OBSTACLE_GENERATION_MAX_ATTEMPTS;
-            
-            do {
-                obstacle = this.generateRandomObstacle();
-                attempts++;
-            } while (this.obstacleCollidesWithTanks(obstacle) && attempts < maxAttempts);
-            
-            if (attempts < maxAttempts) {
-                this.obstacles.push(obstacle);
-            }
-        }
-    }
-
-    /**
-     * Generate a random obstacle
-     * @returns {Object} Obstacle object
-     */
-    generateRandomObstacle() {
-        const isRock = Math.random() < 0.6; // 60% chance for rock
-        const grayColor = '#696969'; // Same gray color for all obstacles
-        
-        if (isRock) {
-            const size = Math.random() * (GAME_CONFIG.ROCK_SIZE_MAX - GAME_CONFIG.ROCK_SIZE_MIN) + GAME_CONFIG.ROCK_SIZE_MIN;
-            return {
-                type: 'rock',
-                x: Math.random() * (GAME_CONFIG.MAP_WIDTH - size) + size / 2,
-                y: Math.random() * (GAME_CONFIG.MAP_HEIGHT - size) + size / 2,
-                radius: size / 2,
-                color: grayColor
-            };
-        } else {
-            const width = Math.random() * (GAME_CONFIG.RECTANGLE_WIDTH_MAX - GAME_CONFIG.RECTANGLE_WIDTH_MIN) + GAME_CONFIG.RECTANGLE_WIDTH_MIN;
-            const height = Math.random() * (GAME_CONFIG.RECTANGLE_HEIGHT_MAX - GAME_CONFIG.RECTANGLE_HEIGHT_MIN) + GAME_CONFIG.RECTANGLE_HEIGHT_MIN;
-            return {
-                type: 'rectangle',
-                x: Math.random() * (GAME_CONFIG.MAP_WIDTH - width) + width / 2,
-                y: Math.random() * (GAME_CONFIG.MAP_HEIGHT - height) + height / 2,
-                width: width,
-                height: height,
-                color: grayColor
-            };
-        }
-    }
-
-    /**
-     * Check if obstacle collides with any tank spawn positions
-     * @param {Object} obstacle - Obstacle to check
-     * @returns {boolean} True if collision detected
-     */
-    obstacleCollidesWithTanks(obstacle) {
-        const spawnPositions = (this.mode && this.mode.calculateSpawnPositions)
-            ? this.mode.calculateSpawnPositions(this)
-            : [];
-        const minDistance = GAME_CONFIG.TANK_SIZE * 2;
-        
-        // If no spawn positions, no collision possible
-        if (spawnPositions.length === 0) {
-            return false;
-        }
-        
-        for (const pos of spawnPositions) {
-            let distance;
-            
-            if (obstacle.type === 'rock') {
-                distance = Math.sqrt((pos.x - obstacle.x) ** 2 + (pos.y - obstacle.y) ** 2);
-                if (distance < obstacle.radius + minDistance) {
-                    return true;
-                }
-            } else {
-                // Rectangle collision check
-                const dx = Math.abs(pos.x - obstacle.x);
-                const dy = Math.abs(pos.y - obstacle.y);
-                if (dx < (obstacle.width / 2 + minDistance) && dy < (obstacle.height / 2 + minDistance)) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
+    spawnBuddy(owner, side = 0) {
+        const angle = owner.turretAngle + Math.PI + side * 1.4;
+        const x = owner.x + Math.cos(angle) * 40;
+        const y = owner.y + Math.sin(angle) * 40;
+        const spot = this.map.tankBlocked(x, y, 30) ? { x: owner.x, y: owner.y } : { x, y };
+        const buddy = this.createTank({
+            ...spot,
+            name: `${owner.name}'s Quaver`,
+            palette: owner.palette,
+            chassis: 'buddy',
+            size: 30,
+            turretLength: 27,
+            health: HARMONY_CONFIG.RALLY_HEALTH,
+            maxHealth: HARMONY_CONFIG.RALLY_HEALTH,
+            speed: GAME_CONFIG.TANK_SPEED * 1.1,
+            isAI: true,
+            isBuddy: true,
+            isAIAlly: owner.isPlayer || owner.isAIAlly,
+            team: owner.team,
+            faction: owner.faction,
+            leader: owner,
+            turretAngle: owner.turretAngle,
+            expiresAt: this.clock + HARMONY_CONFIG.RALLY_MS
+        });
+        this.tanks.push(buddy);
+        this.setStatus(buddy, 'spawnProtect', 800);
+        this.ring(spot.x, spot.y, 50, '#ffd45e', 300);
     }
 
     /**
@@ -366,7 +424,7 @@ class MultiTanksGame {
             // Listen for all control events
             window.midiHandler.onControl('all', (controlEvent) => {
                 this.handleMIDIControl(controlEvent);
-            });
+            }, 'game');
         }
     }
 
@@ -375,18 +433,33 @@ class MultiTanksGame {
      * @param {Object} controlEvent - Control event from MIDI handler
      */
     handleMIDIControl(controlEvent) {
-        const { playerIndex, control, isPressed } = controlEvent;
-        
+        const { playerIndex, control, isPressed, velocity, chord } = controlEvent;
+
+        // Releases still count while paused, or keys would stick down
+        if (this.isPaused) {
+            if (!isPressed) this.activeControls.delete(`${playerIndex}-${control}`);
+            return;
+        }
+
+        // A dialogue takes over the shoot and harmony keys to turn the page
+        if (this.dialog) {
+            if (isPressed && (control === 'D' || isHarmonyControl(control))) this.dialog.advance();
+            if (!isPressed) this.activeControls.delete(`${playerIndex}-${control}`);
+            return;
+        }
+
         // Only handle controls for human players
         if (playerIndex >= this.numPlayers) {
             return;
         }
-        
+
         const tank = this.players[playerIndex];
-        if (!tank || !tank.isAlive) {
+
+        if (chord) {
+            if (isPressed && tank) Abilities.cast(this, tank, chord);
             return;
         }
-        
+
         // Track active controls
         const controlKey = `${playerIndex}-${control}`;
         if (isPressed) {
@@ -394,277 +467,393 @@ class MultiTanksGame {
         } else {
             this.activeControls.delete(controlKey);
         }
+
+        if (!tank) return;
+
+        if (isHarmonyControl(control)) {
+            const keyNumber = HARMONY_KEYS.indexOf(control) + 1;
+            if (isPressed) this.harmony[playerIndex].press(keyNumber, velocity || 0.7);
+            else this.harmony[playerIndex].release(keyNumber);
+        } else if (control === 'D' && isPressed && tank.isAlive) {
+            tank.pendingShot = { at: this.clock, onBeat: this.isOnBeat() };
+        }
+    }
+
+    /**
+     * A player has added a note to their melody. Modes get first refusal, which is
+     * how melody doors work, then we check it against the known melodies.
+     * @param {Object} tank - The player's tank
+     * @param {Array<number>} melody - Harmony keys played so far
+     */
+    noteMelody(tank, melody) {
+        const heard = this.mode && this.mode.onMelody ? this.mode.onMelody(this, tank, melody) : false;
+        if (heard === true) this.harmony.forEach(input => input.clear());
+        if (heard) return;
+        for (const [name, def] of Object.entries(HARMONY_CONFIG.MELODIES)) {
+            const tail = melody.slice(-def.keys.length);
+            if (tail.length === def.keys.length && tail.every((key, i) => key === def.keys[i])) {
+                if (Abilities.cast(this, tank, name)) this.harmony[tank.id].clear();
+                return;
+            }
+        }
+    }
+
+    /**
+     * Every tune this tank could be in the middle of playing right now
+     */
+    knownTunes(tank) {
+        const tunes = Object.entries(HARMONY_CONFIG.MELODIES)
+            .filter(([name]) => this.abilityAvailable(tank, name))
+            .map(([, melody]) => melody.keys);
+        const mode = this.mode;
+        if (mode && mode.nearDoor && mode.level.door) tunes.push(mode.level.door.melody);
+        return tunes;
+    }
+
+    abilityAvailable(tank, name) {
+        if (this.mode && this.mode.abilityAvailable) return this.mode.abilityAvailable(this, tank, name);
+        return true;
+    }
+
+    /**
+     * Do these two tanks fight?
+     */
+    areHostile(a, b) {
+        if (a === b) return false;
+        if (this.gameMode === GAME_MODES.TDM) return a.team !== b.team;
+        if (this.gameMode === GAME_MODES.CAMPAIGN) return a.faction !== b.faction;
+        if (a.isBuddy || b.isBuddy) {
+            const leaderA = a.leader || a;
+            const leaderB = b.leader || b;
+            return leaderA !== leaderB;
+        }
+        return true;
+    }
+
+    bulletHostileTo(bullet, tank) {
+        if (bullet.ownerTank) return this.areHostile(bullet.ownerTank, tank);
+        return bullet.faction !== tank.faction;
+    }
+
+    nearestHostile(tank, x, y, range = Infinity) {
+        let nearest = null;
+        let bestDistance = range;
+        this.tanks.forEach(other => {
+            if (!other.isAlive || !this.areHostile(tank, other) || this.hasStatus(other, 'hidden')) return;
+            const distance = Math.hypot(other.x - x, other.y - y);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                nearest = other;
+            }
+        });
+        return nearest;
+    }
+
+    hasStatus(tank, name) {
+        return (tank.status[name] || 0) > this.clock;
+    }
+
+    setStatus(tank, name, duration) {
+        tank.status[name] = this.clock + duration;
+    }
+
+    /**
+     * A shield that starts out able to take this many hits, and loses them evenly
+     * over its length, so it runs out with time even if nothing touches it
+     */
+    giveShield(tank, duration, hits) {
+        this.setStatus(tank, 'shield', duration);
+        tank.shieldHits = hits;
+        tank.shieldFadeEvery = duration / hits;
+        tank.shieldFadesAt = this.clock + tank.shieldFadeEvery;
+    }
+
+    fadeShield(tank) {
+        if (!tank.shieldHits || this.clock < tank.shieldFadesAt) return;
+        tank.shieldFadesAt += tank.shieldFadeEvery;
+        tank.shieldHits--;
+        if (tank.shieldHits <= 0) tank.status.shield = 0;
+    }
+
+    /**
+     * Let a shield take a hit, if the tank has one up
+     * @returns {boolean} True if the hit was stopped
+     */
+    absorbHit(tank) {
+        if (!this.hasStatus(tank, 'shield')) return false;
+        tank.shieldHits--;
+        if (tank.shieldHits <= 0) {
+            tank.status.shield = 0;
+            this.ring(tank.x, tank.y, 44, '#ffffff', 220);
+            this.puff(tank.x, tank.y, '#7cc0f5', 8);
+        }
+        window.audioSystem.shieldBlock();
+        return true;
+    }
+
+    speedOf(tank) {
+        const stacks = tank.powerups ? tank.powerups.speed.length : 0;
+        let speed = tank.speed * (1 + stacks * GAME_CONFIG.POWERUP_SPEED_BONUS);
+        if (this.hasStatus(tank, 'slow')) speed *= 0.55;
+        return speed;
+    }
+
+    /**
+     * Run something a moment from now, in game time
+     */
+    after(delay, action) {
+        this.delayed.push({ at: this.clock + delay, action });
     }
 
     /**
      * Update game state
-     * @param {number} deltaTime - Time since last frame
+     * @param {number} deltaTime - Time since last tick
      */
     update(deltaTime) {
-        if (this.isPaused) return;
-        
-        this.updateTanks(deltaTime);
-        this.updateBullets(deltaTime);
-        this.updatePowerups(deltaTime);
-        this.checkCollisions();
-        
-        // Campaign mode specific updates
-        if (this.gameMode === GAME_MODES.CAMPAIGN && this.mode) {
-            this.mode.updateCamera(this);
-            this.mode.updateEnemies(this, deltaTime);
-            this.mode.updateAIAllies(this, deltaTime);
+        this.clock += deltaTime;
+
+        const beatIndex = Math.floor(this.beat.position);
+        if (beatIndex !== this.lastBeatIndex) {
+            this.lastBeatIndex = beatIndex;
+            this.onBeat(beatIndex);
         }
-        
+
+        for (let i = this.delayed.length - 1; i >= 0; i--) {
+            if (this.delayed[i].at <= this.clock) {
+                const { action } = this.delayed[i];
+                this.delayed.splice(i, 1);
+                action();
+            }
+        }
+
+        this.updateTanks(deltaTime);
+        this.collisions.separateTanks();
+        this.collisions.updateBullets(deltaTime);
+        this.powerupsManager.update(deltaTime);
+        this.updateTelegraphs();
+
+        if (this.mode.update) this.mode.update(this, deltaTime);
+        this.updateCamera();
+        this.updateEffects(deltaTime);
         this.checkGameEnd();
     }
 
-    /**
-     * Update powerups
-     * @param {number} deltaTime - Time since last frame
-     */
-    updatePowerups(deltaTime) {
-        if (this.powerupsManager) {
-            this.powerupsManager.update(deltaTime);
-        }
-    }
-    
-    /**
-     * Spawn a new powerup
-     */
-    spawnPowerup() {
-        const powerupTypes = Object.keys(GAME_CONFIG.POWERUP_TYPES);
-        const randomType = powerupTypes[Math.floor(Math.random() * powerupTypes.length)];
-        
-        // Find a valid spawn position
-        let attempts = 0;
-        let position = null;
-        
-        while (attempts < 50) {
-            const x = GAME_CONFIG.SPAWN_DISTANCE_FROM_EDGE + 
-                Math.random() * (GAME_CONFIG.MAP_WIDTH - 2 * GAME_CONFIG.SPAWN_DISTANCE_FROM_EDGE);
-            const y = GAME_CONFIG.SPAWN_DISTANCE_FROM_EDGE + 
-                Math.random() * (GAME_CONFIG.MAP_HEIGHT - 2 * GAME_CONFIG.SPAWN_DISTANCE_FROM_EDGE);
-            
-            // Check if position is clear of obstacles and tanks
-            let valid = true;
-            
-            // Check obstacles
-            for (const obstacle of this.obstacles) {
-                if (obstacle.type === 'rock') {
-                    // Circular obstacle
-                    const distance = Math.sqrt((x - obstacle.x) ** 2 + (y - obstacle.y) ** 2);
-                    if (distance < obstacle.size + GAME_CONFIG.POWERUP_SIZE) {
-                        valid = false;
-                        break;
-                    }
-                } else {
-                    // Rectangular obstacle
-                    const powerupLeft = x - GAME_CONFIG.POWERUP_SIZE;
-                    const powerupRight = x + GAME_CONFIG.POWERUP_SIZE;
-                    const powerupTop = y - GAME_CONFIG.POWERUP_SIZE;
-                    const powerupBottom = y + GAME_CONFIG.POWERUP_SIZE;
-                    
-                    const obstacleLeft = obstacle.x;
-                    const obstacleRight = obstacle.x + obstacle.width;
-                    const obstacleTop = obstacle.y;
-                    const obstacleBottom = obstacle.y + obstacle.height;
-                    
-                    // Check if powerup rectangle overlaps with obstacle rectangle
-                    if (powerupLeft < obstacleRight && powerupRight > obstacleLeft &&
-                        powerupTop < obstacleBottom && powerupBottom > obstacleTop) {
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-            
-            // Check tanks
-            if (valid) {
-                for (const tank of this.tanks) {
-                    const distance = Math.sqrt((x - tank.x) ** 2 + (y - tank.y) ** 2);
-                    if (distance < tank.size + GAME_CONFIG.POWERUP_SIZE) {
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-            
-            if (valid) {
-                position = { x, y };
-                break;
-            }
-            
-            attempts++;
-        }
-        
-        if (position) {
-            this.powerups.push({
-                id: Date.now() + Math.random(), // Unique ID for tracking
-                x: position.x,
-                y: position.y,
-                type: randomType,
-                size: GAME_CONFIG.POWERUP_SIZE,
-                alive: true,
-                rotation: 0
-            });
-        }
-    }
-    
-    /**
-     * Apply a powerup to a tank
-     * @param {Object} tank - Tank to apply powerup to
-     * @param {string} powerupType - Type of powerup to apply
-     */
-    applyPowerup(tank, powerupType) {
-        switch (powerupType) {
-            case 'HEALTH':
-                tank.health = Math.min(tank.maxHealth, tank.health + GAME_CONFIG.POWERUP_HEALTH_BOOST);
-                break;
-            case 'INVINCIBILITY':
-                // Extend duration by 15s instead of stacking
-                if (tank.powerups.invincibility.length === 0) {
-                    tank.powerups.invincibility.push(GAME_CONFIG.POWERUP_DURATION);
-                } else {
-                    tank.powerups.invincibility[0] += GAME_CONFIG.POWERUP_DURATION;
-                }
-                break;
-            case 'SPEED':
-                // Add 10 seconds to speed timer (max stacks from config)
-                if (tank.powerups.speed.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
-                    tank.powerups.speed.push(GAME_CONFIG.POWERUP_DURATION);
-                } else {
-                    return; // Don't collect powerup if at limit
-                }
-                break;
-            case 'RAPID_FIRE':
-                // Add 10 seconds to rapid fire timer (max stacks from config)
-                if (tank.powerups.rapidFire.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
-                    tank.powerups.rapidFire.push(GAME_CONFIG.POWERUP_DURATION);
-                } else {
-                    return; // Don't collect powerup if at limit
-                }
-                break;
-            case 'SPREAD_SHOT':
-                // Add 10 seconds to spread shot timer (max stacks from config)
-                if (tank.powerups.spreadShot.length < GAME_CONFIG.POWERUP_MAX_STACKS) {
-                    tank.powerups.spreadShot.push(GAME_CONFIG.POWERUP_DURATION);
-                } else {
-                    return; // Don't collect powerup if at limit
-                }
-                break;
-            case 'BOUNCING_BULLETS':
-                // Extend duration by 15s instead of stacking
-                if (tank.powerups.bouncingBullets.length === 0) {
-                    tank.powerups.bouncingBullets.push(GAME_CONFIG.POWERUP_DURATION);
-                } else {
-                    tank.powerups.bouncingBullets[0] += GAME_CONFIG.POWERUP_DURATION;
-                }
-                break;
-        }
-        
-        // Play powerup sound
-        if (window.audioSystem) {
-            window.audioSystem.powerUp();
-        }
+    onBeat(beatIndex) {
+        if (this.mode.onBeat) this.mode.onBeat(this, beatIndex);
+        if (this.gameMode !== GAME_MODES.CAMPAIGN && !this.gameEnding) this.updateEncore(beatIndex);
+        this.tanks.forEach(tank => {
+            if (tank.isAlive && tank.onBeat) tank.onBeat(tank, beatIndex);
+            if (tank.isAlive && tank.tenutoBeats > 0) Abilities.holdTenuto(this, tank);
+        });
     }
 
     /**
-     * Update all tanks
-     * @param {number} deltaTime - Time since last frame
+     * Matches cannot go on forever. Past the time limit, everyone wears down.
      */
-    updateTanks(deltaTime) {
+    updateEncore(beatIndex) {
+        if (this.clock - this.gameStartTime < GAME_CONFIG.ENCORE_AFTER_MS) return;
+        if (!this.encoreStarted) {
+            this.encoreStarted = true;
+            this.showBanner('Encore!', 'Every tank wears down on the beat. Finish it.', 2600);
+            window.audioSystem.bossRoar();
+        }
+        if (beatIndex % GAME_CONFIG.ENCORE_EVERY_BEATS !== 0) return;
         this.tanks.forEach(tank => {
-            if (!tank || !tank.isAlive) return;
-            
-            // Ensure tank has required properties
-            if (!tank.speed) {
-                console.warn('Tank missing speed property:', tank);
-                return;
-            }
-            
-            if (!tank.powerups) {
-                console.warn('Tank missing powerups property:', tank);
-                return;
-            }
-            
-            // Apply speed powerup (stacking)
-            const speedStacks = tank.powerups.speed.length;
-            const speedMultiplier = speedStacks > 0 ? Math.pow(GAME_CONFIG.POWERUP_SPEED_MULTIPLIER, speedStacks) : 1;
-            const originalSpeed = tank.speed;
-            tank.speed = originalSpeed * speedMultiplier;
-            
-            if (tank.isAI) {
-                // In campaign mode, AI allies are updated via campaignMode.updateAIAllies
-                if (this.gameMode !== GAME_MODES.CAMPAIGN || !tank.isAIAlly) {
-                    window.aiBehavior.updateAITank(tank, deltaTime);
-                }
-            } else {
-                this.updatePlayerTank(tank, deltaTime);
-            }
-            
-            // Restore original speed
-            tank.speed = originalSpeed;
-            
-            // Keep tank within map bounds
-            if (this.collisions) {
-                this.collisions.constrainTankToMap(tank);
-            } else {
-                this.constrainTankToMap(tank);
+            if (tank.isAlive) {
+                this.ring(tank.x, tank.y, 44, '#ff4d6d', 200);
+                this.damageTank(tank, GAME_CONFIG.ENCORE_DAMAGE, { type: 'encore' });
             }
         });
     }
 
     /**
+     * Update all tanks
+     * @param {number} deltaTime - Time since last tick
+     */
+    updateTanks(deltaTime) {
+        const passive = GAME_CONFIG.METER_PASSIVE_PER_SEC * deltaTime / 1000;
+
+        this.tanks.forEach(tank => {
+            if (!tank.isAlive) return;
+            const startX = tank.x;
+            const startY = tank.y;
+            tank.moved = false;
+
+            if (tank.expiresAt && this.clock > tank.expiresAt) {
+                this.puff(tank.x, tank.y, '#ffd45e', 10);
+                tank.isAlive = false;
+                return;
+            }
+
+            if (tank.meter < GAME_CONFIG.METER_MAX) tank.meter = Math.min(GAME_CONFIG.METER_MAX, tank.meter + passive);
+            this.fadeShield(tank);
+
+            const disabled = this.hasStatus(tank, 'sleep') || this.hasStatus(tank, 'stun');
+
+            if (this.hasStatus(tank, 'dash')) {
+                const step = HARMONY_CONFIG.DASH_SPEED;
+                this.collisions.moveTankWithSliding(tank, tank.x + tank.dashX * step, tank.y + tank.dashY * step, null);
+                tank.moved = true;
+                this.dashStrike(tank);
+                this.particles.length < 300 && this.addParticle(tank.x, tank.y, 0, 0, TANK_PALETTES[tank.palette].l, 200, 2);
+            } else if (!disabled) {
+                if (tank.boss) window.Bosses.update(this, tank, deltaTime);
+                else if (tank.enemyType) window.Enemies.update(this, tank, deltaTime);
+                else if (tank.inert) tank.moved = false;
+                else if (tank.isAI) window.aiBehavior.updateAITank(tank, deltaTime);
+                else this.updatePlayerTank(tank, deltaTime);
+            }
+
+            this.applyKnockback(tank);
+            this.applyTileEffects(tank);
+            this.collisions.constrainTankToMap(tank);
+
+            tank.vx = tank.x - startX;
+            tank.vy = tank.y - startY;
+            tank.distance += Math.hypot(tank.vx, tank.vy);
+        });
+
+        // Crew stay in the list for the scoreboard, everything else clears away
+        this.tanks = this.tanks.filter(tank => tank.isAlive || !(tank.isBuddy || tank.enemyType || tank.boss));
+    }
+
+    /**
+     * A Glissando hurts whatever it slides through, once each
+     */
+    dashStrike(tank) {
+        this.tanks.forEach(other => {
+            if (!other.isAlive || other.intangible || tank.dashStruck.has(other) || !this.areHostile(tank, other)) return;
+            if (distanceBetween(tank, other) < (tank.size + other.size) / 2) {
+                tank.dashStruck.add(other);
+                this.damageTank(other, HARMONY_CONFIG.DASH_DAMAGE, { source: tank, type: 'blast' });
+            }
+        });
+    }
+
+    applyKnockback(tank) {
+        if (Math.abs(tank.kx) < 0.05 && Math.abs(tank.ky) < 0.05) {
+            tank.kx = 0;
+            tank.ky = 0;
+            return;
+        }
+        if (!tank.immobile) {
+            this.collisions.moveTankWithSliding(tank, tank.x + tank.kx, tank.y + tank.ky, null);
+        }
+        tank.kx *= 0.84;
+        tank.ky *= 0.84;
+    }
+
+    knockback(tank, angle, force) {
+        const resist = tank.boss ? 0.15 : (tank.size > 40 ? 0.5 : 1);
+        tank.kx += Math.cos(angle) * force * resist;
+        tank.ky += Math.sin(angle) * force * resist;
+    }
+
+    /**
+     * What the ground under a tank does to it
+     */
+    applyTileEffects(tank) {
+        const map = this.map;
+        const c = Math.floor(tank.x / WORLD.TILE);
+        const r = Math.floor(tank.y / WORLD.TILE);
+        const type = map.at(c, r);
+        const dashing = this.hasStatus(tank, 'dash');
+        const tileIndex = map.index(c, r);
+
+        if (type === TILES.PIT) {
+            // A dash carries a tank over a gap. Coming down in one costs health.
+            if (!dashing) {
+                this.damageTank(tank, GAME_CONFIG.PIT_FALL_DAMAGE, { type: 'hazard' });
+                tank.x = tank.lastSafeX;
+                tank.y = tank.lastSafeY;
+                this.setStatus(tank, 'spawnProtect', 700);
+            }
+            return;
+        }
+        if (!dashing && !map.tankBlocked(tank.x, tank.y, tank.size)) {
+            tank.lastSafeX = tank.x;
+            tank.lastSafeY = tank.y;
+        }
+        if (tank.boss || tank.immobile) return;
+
+        if (type === TILES.SPIKES && !dashing && this.clock >= tank.spikeReadyAt) {
+            tank.spikeReadyAt = this.clock + GAME_CONFIG.SPIKE_INTERVAL_MS;
+            this.damageTank(tank, GAME_CONFIG.SPIKE_DAMAGE, { type: 'hazard' });
+        } else if (type >= TILES.BOOST_N && type <= TILES.BOOST_W) {
+            const [dx, dy] = BOOST_DIRECTIONS[type];
+            const push = tank.speed * (GAME_CONFIG.BOOST_MULTIPLIER - 1) + 0.5;
+            this.collisions.moveTankWithSliding(tank, tank.x + dx * push, tank.y + dy * push, null);
+        } else if (type === TILES.STRING && this.stringsActive() && !dashing) {
+            const beatIndex = Math.floor(this.beat.position);
+            if (tank.stringHitBeat !== beatIndex) {
+                tank.stringHitBeat = beatIndex;
+                this.damageTank(tank, GAME_CONFIG.STRING_DAMAGE, { type: 'hazard' });
+                window.audioSystem.pluck();
+            }
+        } else if (type === TILES.KEYPAD && tank.lastTile !== tileIndex) {
+            // Floor keys play their note when driven over, if there are any notes
+            this.keypadGlow.set(tileIndex, this.clock + 400);
+            const silent = this.mode.keysAreSilent && this.mode.keysAreSilent();
+            if (!tank.isAI && !silent) window.audioSystem.pianoNote(keyPitch(c), 0.6, 0.5);
+        }
+        tank.lastTile = tileIndex;
+    }
+
+    /**
+     * Strings ring on every other beat, and hurt anything touching them while they do
+     */
+    stringsActive() {
+        return Math.floor(this.beat.position) % 2 === 1;
+    }
+
+    /**
      * Update player tank based on active controls
      * @param {Object} tank - Tank to update
-     * @param {number} deltaTime - Time since last frame
+     * @param {number} deltaTime - Time since last tick
      */
     updatePlayerTank(tank, deltaTime) {
         const playerIndex = tank.id;
-        
+
         // Check for movement controls
         const moveUp = this.activeControls.has(`${playerIndex}-A_SHARP`);
         const moveLeft = this.activeControls.has(`${playerIndex}-A`);
         const moveDown = this.activeControls.has(`${playerIndex}-B`);
         const moveRight = this.activeControls.has(`${playerIndex}-C`);
-        
+
         // Check for turret controls
         const aimLeft = this.activeControls.has(`${playerIndex}-C_SHARP`);
         const aimRight = this.activeControls.has(`${playerIndex}-D_SHARP`);
-        const shoot = this.activeControls.has(`${playerIndex}-D`);
-        
+        const holdingFire = this.activeControls.has(`${playerIndex}-D`);
+
         // Handle movement with diagonal support
         let moveX = 0;
         let moveY = 0;
-        
+
         if (moveUp) moveY -= 1;
         if (moveDown) moveY += 1;
         if (moveLeft) moveX -= 1;
         if (moveRight) moveX += 1;
-        
+
         // Normalize diagonal movement
         if (moveX !== 0 && moveY !== 0) {
             const length = Math.sqrt(moveX * moveX + moveY * moveY);
             moveX /= length;
             moveY /= length;
         }
-        
+
         // Update tank angle based on movement direction
         if (moveX !== 0 || moveY !== 0) {
             const moveAngle = Math.atan2(moveY, moveX);
-            
-            // Move tank with sliding
-            const newX = tank.x + moveX * tank.speed;
-            const newY = tank.y + moveY * tank.speed;
-            
+            const speed = this.speedOf(tank);
+            tank.moveDirection = { x: moveX, y: moveY };
+            tank.moved = true;
+
             // Use sliding movement system
-            if (this.collisions) {
-                this.collisions.moveTankWithSliding(tank, newX, newY, moveAngle);
-            } else {
-                this.moveTankWithSliding(tank, newX, newY, moveAngle);
-            }
+            this.collisions.moveTankWithSliding(tank, tank.x + moveX * speed, tank.y + moveY * speed, moveAngle);
+        } else {
+            tank.moveDirection = null;
         }
-        
+
         // Handle turret rotation
         if (aimLeft) {
             tank.turretAngle -= tank.turretRotationSpeed;
@@ -672,270 +861,511 @@ class MultiTanksGame {
         if (aimRight) {
             tank.turretAngle += tank.turretRotationSpeed;
         }
-        
-        // Handle shooting
-        if (shoot) {
-            // Apply rapid fire powerup (stacking) for player
-            const rapidFireStacks = tank.powerups.rapidFire.length;
-            const fireRateMultiplier = rapidFireStacks > 0 ? Math.pow(GAME_CONFIG.POWERUP_FIRE_RATE_MULTIPLIER, rapidFireStacks) : 1;
-            const cooldown = GAME_CONFIG.SHOOT_COOLDOWN / fireRateMultiplier;
-            
-            if (Date.now() - tank.lastShot > cooldown) {
-                this.shootBullet(tank);
-                tank.lastShot = Date.now();
-                
-                // Play shoot sound
-                if (window.audioSystem) {
-                    window.audioSystem.shoot();
-                }
+
+        // A fresh press stays queued for a moment, so a shot on the beat is not lost
+        // to a cooldown that was about to end
+        const pending = tank.pendingShot;
+        if (pending && this.clock - pending.at > 130) tank.pendingShot = null;
+
+        if ((tank.pendingShot || holdingFire) && this.clock >= tank.nextShotAt) {
+            const fresh = tank.pendingShot;
+            tank.pendingShot = null;
+            if (fresh && !this.beatless) this.scoreRhythm(tank, fresh.onBeat);
+            this.fireShot(tank, !!(fresh && fresh.onBeat));
+        }
+    }
+
+    /**
+     * A fresh shot either keeps the groove going or drops it
+     */
+    scoreRhythm(tank, onBeat) {
+        if (onBeat) {
+            tank.groove = Math.min(GAME_CONFIG.GROOVE_MAX, tank.groove + 1);
+            this.addMeter(tank, 1 + tank.groove * GAME_CONFIG.GROOVE_METER_BONUS);
+            this.beatHitUntil = this.clock + 140;
+            window.audioSystem.perfect();
+            const stats = this.playerStats.get(tank.id);
+            if (stats) stats.bestGroove = Math.max(stats.bestGroove, tank.groove);
+        } else {
+            tank.groove = 0;
+        }
+    }
+
+    /**
+     * Fire a tank's gun
+     * @param {Object} tank - Tank shooting
+     * @param {boolean} onBeat - Landed on the beat
+     */
+    fireShot(tank, onBeat = false) {
+        const shot = GAME_CONFIG.SHOT;
+        const spreadStacks = tank.powerups.spreadShot.length;
+        const count = 1 + spreadStacks * 2;
+        const spacing = GAME_CONFIG.POWERUP_SPREAD_ANGLE * (spreadStacks > 1 ? 0.75 : 1);
+        const baseDamage = shot.damage + (onBeat ? (this.beatDamageBonus ?? GAME_CONFIG.BEAT_DAMAGE_BONUS) : 0);
+        const damage = spreadStacks > 1 ? Math.round(baseDamage * GAME_CONFIG.POWERUP_SPREAD_DAMAGE) : baseDamage;
+        const bounces = tank.powerups.bouncingBullets.length > 0 ? GAME_CONFIG.POWERUP_BOUNCE_BOUNCES : 0;
+        const echoing = this.hasStatus(tank, 'echo');
+        const pal = TANK_PALETTES[tank.palette];
+
+        const shoot = (extraBounces) => {
+            if (!tank.isAlive) return;
+            for (let i = 0; i < count; i++) {
+                const angle = tank.turretAngle + (i - (count - 1) / 2) * spacing;
+                this.spawnBullet({
+                    x: tank.x + Math.cos(angle) * tank.turretLength,
+                    y: tank.y + Math.sin(angle) * tank.turretLength,
+                    angle,
+                    speed: shot.speed,
+                    size: shot.size,
+                    damage,
+                    knockback: shot.knockback,
+                    meter: shot.meter,
+                    owner: tank,
+                    kind: 'shot',
+                    color: onBeat ? '#ffd45e' : pal.l,
+                    bounces: bounces + extraBounces,
+                    ricochet: bounces > 0
+                });
+            }
+        };
+        shoot(echoing ? 1 : 0);
+        for (let i = 1; echoing && i <= HARMONY_CONFIG.ECHO_REPEATS; i++) {
+            this.after(HARMONY_CONFIG.ECHO_DELAY_MS * i, () => shoot(1));
+        }
+
+        // Vivace fills in the time after a shot: eighths, then triplets, then sixteenths
+        const vivace = tank.powerups.rapidFire.length;
+        for (let i = 1; i <= vivace; i++) {
+            this.after(this.beat.msPerBeat * i / (vivace + 1), () => {
+                shoot(0);
+                tank.recoilUntil = this.clock + 80;
+                window.audioSystem.shoot(onBeat);
+            });
+        }
+
+        tank.nextShotAt = this.clock + shot.cooldown;
+        tank.recoilUntil = this.clock + 110;
+        tank.muzzleUntil = this.clock + 70;
+        tank.shotsFired++;
+        const stats = this.playerStats.get(tank.id);
+        if (stats) stats.shotsFired++;
+        window.audioSystem.shoot(onBeat);
+    }
+
+    /**
+     * Put a bullet in the world
+     * @param {Object} options - Position, angle, speed, damage and owner, plus extras
+     */
+    spawnBullet(options) {
+        const { angle, speed, owner = null } = options;
+        const bullet = {
+            size: 9,
+            damage: 1,
+            knockback: 0,
+            bounces: 0,
+            kind: 'shot',
+            color: '#ffffff',
+            life: GAME_CONFIG.BULLET_MAX_LIFETIME_MS,
+            ...options,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            ownerTank: owner,
+            faction: owner ? owner.faction : options.faction,
+            dead: false
+        };
+        this.bullets.push(bullet);
+        return bullet;
+    }
+
+    /**
+     * Hurt a tank
+     * @param {Object} target - Tank being hurt
+     * @param {number} amount - Damage
+     * @param {Object} options - source tank, the bullet, and the type of damage
+     */
+    damageTank(target, amount, options = {}) {
+        const { source = null, bullet = null, type = 'bullet' } = options;
+        if (!target.isAlive || amount <= 0) return;
+        if (this.collisions.isTankInvincible(target)) return;
+        if (type === 'hazard' && target.boss) return;
+        if (type !== 'hazard' && type !== 'encore' && this.absorbHit(target)) return;
+
+        const damage = Math.round(amount * (target.damageTaken ?? 1) * 10) / 10;
+        target.health -= damage;
+        target.tenutoBeats = 0;
+        target.hurtUntil = this.clock + 90;
+        if (source) target.lastAttacker = source;
+
+        const color = source && source.isPlayer ? '#ffffff' : '#ff9a8b';
+        this.floatText(target.x + (Math.random() - 0.5) * 18, target.y - 20, String(Math.ceil(damage)), color, 10);
+        this.puff(target.x, target.y, TANK_PALETTES[target.palette].l, 3);
+
+        if (source) {
+            this.addMeter(source, bullet ? (bullet.meter || 2) : 2);
+            const stats = this.playerStats.get(source.id);
+            if (stats) stats.damageDealt += damage;
+        }
+        this.addMeter(target, 1);
+
+        if (target.isPlayer) {
+            window.audioSystem.hurt();
+            this.shake(3);
+        } else {
+            window.audioSystem.hit();
+        }
+
+        if (target.health <= 0) {
+            if (target.boss && target.def.resolves) {
+                // This one cannot be beaten, only played
+                target.health = 1;
+                this.mode.beginResolution(this, target);
+                return;
+            }
+            this.killTank(target, source);
+        }
+    }
+
+    healTank(tank, amount) {
+        const before = tank.health;
+        tank.health = Math.min(tank.maxHealth, tank.health + amount);
+        if (tank.health > before) {
+            this.floatText(tank.x, tank.y - 24, `+${Math.ceil(tank.health - before)}`, '#a4e87a', 10);
+        }
+    }
+
+    addMeter(tank, amount) {
+        if (tank.meter === undefined) return;
+        tank.meter = Math.min(GAME_CONFIG.METER_MAX, tank.meter + amount);
+    }
+
+    /**
+     * Handle tank death
+     */
+    killTank(tank, source) {
+        tank.isAlive = false;
+        tank.health = 0;
+        tank.deathTime = this.clock;
+        tank.killedBy = source ? source.name : 'the stage';
+
+        // Update kill/death statistics
+        if (source) {
+            source.kills++;
+            const sourceStats = this.playerStats.get(source.id);
+            if (sourceStats) {
+                sourceStats.kills++;
+                sourceStats.killsList.push(tank.name);
+            }
+        }
+        const tankStats = this.playerStats.get(tank.id);
+        if (tankStats) {
+            tankStats.deaths++;
+            tankStats.deathTime = tank.deathTime;
+            tankStats.killedBy = tank.killedBy;
+        }
+
+        this.explode(tank.x, tank.y, tank.palette, tank.size);
+        if (tank.isPlayer || tank.isAIAlly) {
+            window.audioSystem.death();
+            this.shake(6);
+        } else {
+            window.audioSystem.enemyDeath();
+            this.shake(3);
+        }
+        if (this.mode.onTankKilled) this.mode.onTankKilled(this, tank, source);
+    }
+
+    damageTile(c, r, amount) {
+        const map = this.map;
+        const i = map.index(c, r);
+        if (map.tiles[i] !== TILES.CRATE) return;
+        map.health[i] = Math.max(0, map.health[i] - amount);
+        if (map.health[i] > 0) {
+            this.puff((c + 0.5) * WORLD.TILE, (r + 0.5) * WORLD.TILE, '#d8a468', 2);
+            return;
+        }
+        const x = (c + 0.5) * WORLD.TILE;
+        const y = (r + 0.5) * WORLD.TILE;
+        map.change(c, r, TILES.FLOOR);
+        this.puff(x, y, '#b07a44', 12);
+        window.audioSystem.crate();
+        if (Math.random() < 0.4) {
+            this.powerupsManager.drop(x, y, this.powerupsManager.getWeightedRandomType());
+        }
+    }
+
+    forEachTileInRadius(x, y, radius, action) {
+        const left = Math.floor((x - radius) / WORLD.TILE);
+        const right = Math.floor((x + radius) / WORLD.TILE);
+        const top = Math.floor((y - radius) / WORLD.TILE);
+        const bottom = Math.floor((y + radius) / WORLD.TILE);
+        for (let r = top; r <= bottom; r++) {
+            for (let c = left; c <= right; c++) {
+                if (Math.hypot((c + 0.5) * WORLD.TILE - x, (r + 0.5) * WORLD.TILE - y) <= radius) action(c, r);
             }
         }
     }
 
-
+    // -------------------------------------------------------------------------
+    // Telegraphs: the warning shapes painted on the floor before a big attack
+    // -------------------------------------------------------------------------
 
     /**
-     * Move tank with obstacle sliding
-     * @param {Object} tank - Tank to move
-     * @param {number} newX - Desired X position
-     * @param {number} newY - Desired Y position
-     * @param {number} moveAngle - Movement angle
+     * Warn of an attack, then run it
+     * @param {Object} shape - circle {x,y,radius} or line {x,y,angle,length,width}
+     * @param {number} delay - Warning time in ms
+     * @param {Function} action - Runs when the warning ends
      */
-    moveTankWithSliding(tank, newX, newY, moveAngle) {
-        if (this.collisions) {
-            this.collisions.moveTankWithSliding(tank, newX, newY, moveAngle);
+    telegraph(shape, delay, action) {
+        this.telegraphs.push({ ...shape, start: this.clock, end: this.clock + delay, action });
+        window.audioSystem.telegraph();
+    }
+
+    updateTelegraphs() {
+        for (let i = this.telegraphs.length - 1; i >= 0; i--) {
+            const mark = this.telegraphs[i];
+            if (this.clock >= mark.end) {
+                this.telegraphs.splice(i, 1);
+                mark.action(mark);
+            }
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Effects
+    // -------------------------------------------------------------------------
 
-    
+    addParticle(x, y, vx, vy, color, life, size = 3) {
+        this.particles.push({ x, y, vx, vy, color, life, maxLife: life, size });
+    }
+
+    puff(x, y, color, count = 4) {
+        for (let i = 0; i < count && this.particles.length < 300; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 0.6 + Math.random() * 2;
+            this.addParticle(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color, 220 + Math.random() * 200, 3);
+        }
+    }
+
+    spark(x, y) {
+        this.puff(x, y, '#ffffff', 3);
+    }
+
+    explode(x, y, paletteKey, size) {
+        const pal = TANK_PALETTES[paletteKey];
+        const colors = ['#fff2b0', '#ffb066', pal.l, pal.m, '#5a5670'];
+        const count = Math.min(46, 20 + size / 2);
+        for (let i = 0; i < count && this.particles.length < 300; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 0.8 + Math.random() * 3.6;
+            this.addParticle(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed,
+                colors[i % colors.length], 300 + Math.random() * 420, i % 3 === 0 ? 6 : 3);
+        }
+        this.ring(x, y, size * 1.5, '#fff2b0', 240);
+    }
+
+    ring(x, y, radius, color, duration) {
+        this.rings.push({ x, y, radius, color, start: this.clock, end: this.clock + duration });
+    }
+
+    floatText(x, y, text, color = '#ffffff', size = 10) {
+        if (this.floaters.length > 40) this.floaters.shift();
+        this.floaters.push({ x, y, text, color, size, start: this.clock, end: this.clock + 760 });
+    }
+
+    floatIcon(x, y, icon) {
+        if (this.floaters.length > 40) this.floaters.shift();
+        this.floaters.push({ x, y, icon, start: this.clock, end: this.clock + 760 });
+    }
+
+    shake(amount) {
+        this.shakeAmount = Math.max(this.shakeAmount, amount);
+    }
+
+    flash(color, duration) {
+        this.flashColor = color;
+        this.flashUntil = this.clock + duration;
+        this.flashLength = duration;
+    }
 
     /**
-     * Update all bullets
-     * @param {number} deltaTime - Time since last frame
+     * Show a large line of text across the stage
      */
-    updateBullets(deltaTime) {
-        const nowMs = Date.now();
-        this.bullets = this.bullets.filter(bullet => {
-            // Expire bullets after max lifetime
-            if (!bullet.spawnTime) bullet.spawnTime = nowMs;
-            if (nowMs - bullet.spawnTime > GAME_CONFIG.BULLET_MAX_LIFETIME_MS) {
-                return false;
-            }
-            bullet.x += Math.cos(bullet.angle) * bullet.speed;
-            bullet.y += Math.sin(bullet.angle) * bullet.speed;
+    showBanner(title, subtitle = '', duration = 2200) {
+        this.banner = { title, subtitle, start: this.clock, end: this.clock + duration };
+    }
 
-            let bounced = false;
-            const radius = bullet.size / 2;
-
-            // Left or right walls
-            if (bullet.x < radius || bullet.x > GAME_CONFIG.MAP_WIDTH - radius) {
-                if (bullet.bounces > 0) {
-                    bullet.angle = Math.PI - bullet.angle;
-                    bullet.bounces--;
-                    bounced = true;
-                    bullet.x = Math.max(radius, Math.min(GAME_CONFIG.MAP_WIDTH - radius, bullet.x));
-                } else {
-                    return false; // remove
-                }
-            }
-
-            // Top or bottom walls
-            if (bullet.y < radius || bullet.y > GAME_CONFIG.MAP_HEIGHT - radius) {
-                if (bullet.bounces > 0 || bounced) { // allow bounce if already bounced this step on X
-                    if (!bounced) bullet.bounces--;
-                    bullet.angle = -bullet.angle;
-                    bullet.y = Math.max(radius, Math.min(GAME_CONFIG.MAP_HEIGHT - radius, bullet.y));
-                } else {
-                    return false; // remove
-                }
-            }
-
-            return true;
+    updateEffects(deltaTime) {
+        this.particles = this.particles.filter(particle => {
+            particle.life -= deltaTime;
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+            particle.vx *= 0.93;
+            particle.vy *= 0.93;
+            return particle.life > 0;
         });
+        this.rings = this.rings.filter(ring => this.clock < ring.end);
+        this.floaters = this.floaters.filter(floater => this.clock < floater.end);
+        this.shakeAmount *= 0.86;
+        if (this.shakeAmount < 0.3) this.shakeAmount = 0;
+        if (this.banner && this.clock > this.banner.end) this.banner = null;
     }
+
+    // -------------------------------------------------------------------------
+    // Camera
+    // -------------------------------------------------------------------------
+
+    cameraTarget() {
+        const alive = list => list.filter(tank => tank.isAlive);
+        let group = alive(this.tanks.filter(tank => tank.isPlayer));
+        if (group.length === 0) group = alive(this.tanks.filter(tank => tank.isAIAlly));
+        if (group.length === 0) group = alive(this.tanks);
+        if (group.length === 0) return null;
+        return {
+            x: group.reduce((sum, tank) => sum + tank.x, 0) / group.length,
+            y: group.reduce((sum, tank) => sum + tank.y, 0) / group.length
+        };
+    }
+
+    clampCamera(x, y) {
+        const viewW = this.viewW * WORLD.PIXEL;
+        const viewH = this.viewH * WORLD.PIXEL;
+        const clamp = (value, viewSize, mapSize, startPad, endPad) => {
+            // The HUD bars take up the edges, so the map may scroll out from under them
+            const open = viewSize - startPad - endPad;
+            if (mapSize <= open) return (mapSize - open) / 2 - startPad; // A small map sits in the middle
+            return Math.max(-startPad, Math.min(mapSize - viewSize + endPad, value));
+        };
+        return {
+            x: clamp(x, viewW, this.map.width, 0, 0),
+            y: clamp(y, viewH, this.map.height, HUD_TOP_PX * WORLD.PIXEL, HUD_BOTTOM_PX * WORLD.PIXEL)
+        };
+    }
+
+    centerCamera() {
+        const target = this.cameraTarget() || { x: this.map.width / 2, y: this.map.height / 2 };
+        this.camera = this.clampCamera(target.x - this.viewW * WORLD.PIXEL / 2, target.y - this.viewH * WORLD.PIXEL / 2);
+    }
+
+    updateCamera() {
+        const target = this.cameraFocus || this.cameraTarget();
+        if (!target) return;
+        const wanted = this.clampCamera(
+            target.x - this.viewW * WORLD.PIXEL / 2,
+            target.y - this.viewH * WORLD.PIXEL / 2
+        );
+        const speed = CAMPAIGN_CONFIG.CAMERA.followSpeed;
+        this.camera.x += (wanted.x - this.camera.x) * speed;
+        this.camera.y += (wanted.y - this.camera.y) * speed;
+    }
+
+    // -------------------------------------------------------------------------
+    // End of game
+    // -------------------------------------------------------------------------
 
     /**
      * Check if game should end
      */
     checkGameEnd() {
-        if (this.mode && this.mode.checkGameEnd) {
+        if (!this.gameEnding && this.mode && this.mode.checkGameEnd) {
             this.mode.checkGameEnd(this);
         }
     }
-    
+
     /**
      * End the game and show statistics
      */
     endGame() {
-        this.gameEndTime = Date.now();
-        this.gameState = GAME_STATES.GAME_OVER;
-        // Play victory music once
-        if (window.audioSystem) {
-            window.audioSystem.stopMusic();
-            window.audioSystem.playMusic('victory.mp3', false);
-        }
-        this.showEndGameStats();
+        if (this.gameEnding) return;
+        this.gameEnding = true;
+        this.gameEndTime = this.clock;
+
+        // Let the last explosion finish before the results come up
+        this.after(900, () => {
+            this.gameState = GAME_STATES.GAME_OVER;
+            window.audioSystem.playVictory();
+            this.showEndGameStats();
+        });
     }
-    
+
     /**
      * Show end game statistics screen
      */
     showEndGameStats() {
-        // Calculate final statistics
-        const gameDuration = this.gameEndTime - this.gameStartTime;
-        
-        // Update time alive for all players
-        this.tanks.forEach(tank => {
-            const tankStats = this.playerStats.get(tank.id);
-            if (tankStats) {
-                if (tank.isAlive) {
-                    tankStats.timeAlive = gameDuration;
-                } else {
-                    tankStats.timeAlive = tank.deathTime - this.gameStartTime;
-                }
-            }
-        });
-        
-        // Create statistics HTML
-        const statsHTML = this.generateStatsHTML(gameDuration);
-        
-        // Create overlay
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.8);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-            color: white;
-            font-family: Arial, sans-serif;
-        `;
-        
-        overlay.innerHTML = `
-            <div style="background: #333; padding: 30px; border-radius: 10px; max-width: 1200px; max-height: 80vh; overflow-y: auto;">
-                <h2 style="text-align: center; margin-bottom: 20px;">Game Statistics</h2>
-                ${statsHTML}
-                <div style="text-align: center; margin-top: 20px;">
-                    <button id="playAgainBtn" style="padding: 10px 20px; margin: 5px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Play Again</button>
-                </div>
-            </div>
-        `;
-        
-        document.body.appendChild(overlay);
-        
-        // Add event listeners
-        document.getElementById('playAgainBtn').addEventListener('click', () => {
-            document.body.removeChild(overlay);
-            this.restartGame();
+        const seconds = Math.round((this.gameEndTime - this.gameStartTime) / 1000);
+        window.menu.showResults({
+            title: this.determineWinner(),
+            tone: 'win',
+            subtitle: `Match length ${seconds}s`,
+            rows: this.statsRows(),
+            buttons: [
+                { icon: 'restart', label: 'Play again', primary: true, action: () => this.restartGame() },
+                { icon: 'home', label: 'Main menu', action: () => window.menu.returnToMenu() }
+            ]
         });
     }
-    
-        /**
+
+    statsRows() {
+        const rows = [];
+        this.playerStats.forEach((stats, id) => {
+            const tank = this.tanks.find(t => t.id === id);
+            rows.push({
+                name: stats.name,
+                palette: stats.palette,
+                alive: tank ? tank.isAlive : false,
+                kills: stats.kills,
+                damage: Math.round(stats.damageDealt),
+                accuracy: stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0,
+                groove: stats.bestGroove,
+                abilities: stats.abilitiesUsed,
+                powerups: stats.powerupsCollected
+            });
+        });
+        return rows.sort((a, b) => b.kills - a.kills || b.damage - a.damage);
+    }
+
+    /**
      * Determine the winner of the game
      * @returns {string} Winner information
      */
     determineWinner() {
         if (this.gameMode === GAME_MODES.FFA) {
-            const aliveTanks = this.tanks.filter(t => t.isAlive);
+            const aliveTanks = this.tanks.filter(t => t.isAlive && !t.isBuddy);
             if (aliveTanks.length === 1) {
-                return `🏆 Winner: ${aliveTanks[0].name}`;
-            } else if (aliveTanks.length === 0) {
-                return "🤝 Draw - No survivors";
-            } else {
-                return `🤝 Draw - ${aliveTanks.length} survivors`;
+                return `${aliveTanks[0].name} wins!`;
             }
+            return 'Draw: nobody left standing';
         } else if (this.gameMode === GAME_MODES.TDM) {
             const redAlive = this.tanks.filter(t => t.isAlive && t.team === 'red').length;
             const blueAlive = this.tanks.filter(t => t.isAlive && t.team === 'blue').length;
-            
+
             if (redAlive > 0 && blueAlive === 0) {
-                return "🏆 Winner: Red Team";
+                return 'Red Team wins!';
             } else if (blueAlive > 0 && redAlive === 0) {
-                return "🏆 Winner: Blue Team";
-            } else if (redAlive === 0 && blueAlive === 0) {
-                return "🤝 Draw - No survivors";
-            } else {
-                return `🤝 Draw - Red: ${redAlive}, Blue: ${blueAlive}`;
+                return 'Blue Team wins!';
             }
+            return 'Draw: nobody left standing';
         }
-        return "";
+        return '';
     }
 
-    /**
-     * Generate statistics HTML
-     */
-    generateStatsHTML(gameDuration) {
-        const winner = this.determineWinner();
-        
-        let html = `
-            <div style="margin-bottom: 20px;">
-                <div style="text-align: center; margin-bottom: 15px; font-size: 18px; font-weight: bold; color: #4CAF50;">
-                    ${winner}
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <strong>Game Duration:</strong> ${Math.round(gameDuration / 1000)}s
-                </div>
-            </div>
-            <table style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr style="background: #555;">
-                        <th style="padding: 10px; border: 1px solid #666;">Player</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Team</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Time Alive</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Shots Fired</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Shots Hit</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Accuracy</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Players Killed</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Killed By</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Final Health</th>
-                        <th style="padding: 10px; border: 1px solid #666;">Powerups</th>
-                    </tr>
-                </thead>
-                <tbody>
-        `;
-        
-        this.playerStats.forEach((stats, playerId) => {
-            const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
-            const timeAlivePercent = Math.round((stats.timeAlive / gameDuration) * 100);
-            
-            const tank = this.tanks.find(t => t.id === playerId);
-            html += `
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.name}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.team || 'N/A'}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${timeAlivePercent}%</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.shotsFired}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.shotsHit}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${accuracy}%</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${(stats.killsList || []).join(', ') || '—'}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.killedBy || '—'}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${tank ? tank.health : 0}</td>
-                    <td style="padding: 8px; border: 1px solid #666;">${stats.powerupsCollected || 0}</td>
-                </tr>
-            `;
-        });
-        
-        html += `
-                </tbody>
-            </table>
-        `;
-        
-        return html;
-    }
-    
     /**
      * Clear all game objects (bullets, powerups, etc.)
      */
     clearGameObjects() {
         this.bullets = [];
         this.powerups = [];
-        this.powerupSpawnTimer = 0;
+        this.particles = [];
+        this.rings = [];
+        this.floaters = [];
+        this.delayed = [];
+        this.telegraphs = [];
+        this.powerupSpawnTimer = 3000;
+        this.banner = null;
+        this.flashUntil = 0;
+        this.shakeAmount = 0;
+        this.keypadGlow.clear();
+        this.cameraFocus = null;
+        this.harmony.forEach(input => input.clear());
     }
 
     /**
@@ -946,247 +1376,26 @@ class MultiTanksGame {
         if (window.midiHandler) {
             window.midiHandler.resetAllControls();
         }
-        
+
         // Clear active controls to ensure clean state
         this.activeControls.clear();
-        
+
         // Stop any existing loop before restarting
         this.stopGameLoop();
-        
+
         // Reset game state
         this.gameState = GAME_STATES.PLAYING;
         this.tanks = [];
-        this.bullets = [];
-        this.obstacles = [];
         this.players = [];
         this.aiBots = [];
-        this.powerups = [];
         this.teams = { red: [], blue: [] };
         this.playerStats.clear();
-        this.powerupSpawnTimer = 0;
-        
+        this.clearGameObjects();
+        this.isPaused = false;
+        this.encoreStarted = false;
+
         // Reinitialize with preserved settings
-        this.initialize(this.canvas, this.numPlayers, this.numAIBots, this.gameMode, this.teamAssignments, this.aiTeamDistribution);
-    }
-    
-
-    /**
-     * Check for collisions
-     */
-    checkCollisions() {
-        // Bullet vs Tank collisions
-        this.bullets.forEach((bullet, bulletIndex) => {
-            this.tanks.forEach(tank => {
-                // Use mode-specific collision handling
-                if (this.mode && this.mode.handleBulletTankCollision) {
-                    if (this.mode.handleBulletTankCollision(this, bullet, bulletIndex, tank)) {
-                        return; // Collision was handled by the mode
-                    }
-                }
-            });
-        });
-        
-        // Campaign mode: Bullet vs Enemy collisions
-        if (this.gameMode === GAME_MODES.CAMPAIGN && this.mode) {
-            this.bullets.forEach((bullet, bulletIndex) => {
-                this.mode.enemies.forEach(enemy => {
-                    if (this.mode.handleBulletEnemyCollision) {
-                        this.mode.handleBulletEnemyCollision(this, bullet, bulletIndex, enemy);
-                    }
-                });
-            });
-            
-            // Campaign mode: Enemy bullet vs Player/AI Ally collisions
-            this.bullets.forEach((bullet, bulletIndex) => {
-                if (bullet.owner === 'enemy') {
-                    this.tanks.forEach(tank => {
-                        if (this.mode.handleEnemyBulletTankCollision) {
-                            this.mode.handleEnemyBulletTankCollision(this, bullet, bulletIndex, tank);
-                        }
-                    });
-                }
-            });
-        }
-        
-        // Bullet vs Obstacle collisions
-        this.bullets.forEach((bullet, bulletIndex) => {
-            this.obstacles.forEach(obstacle => {
-                let hit = false;
-                
-                if (obstacle.type === 'rock') {
-                    const distance = Math.sqrt((bullet.x - obstacle.x) ** 2 + (bullet.y - obstacle.y) ** 2);
-                    hit = distance < obstacle.radius;
-                } else {
-                    const dx = Math.abs(bullet.x - obstacle.x);
-                    const dy = Math.abs(bullet.y - obstacle.y);
-                    hit = dx < obstacle.width / 2 && dy < obstacle.height / 2;
-                }
-                
-                if (hit) {
-                    // Check for bouncing bullets powerup
-                    if (bullet.bounces > 0) {
-                        // Bounce the bullet
-                        bullet.bounces--;
-                        
-                        // Calculate bounce direction
-                        if (obstacle.type === 'rock') {
-                            // Circular obstacle bounce - reflect off the surface normal
-                            const dx = bullet.x - obstacle.x;
-                            const dy = bullet.y - obstacle.y;
-                            const distance = Math.sqrt(dx * dx + dy * dy);
-                            if (distance > 0) {
-                                // Normal vector pointing from obstacle center to bullet
-                                const nx = dx / distance;
-                                const ny = dy / distance;
-                                
-                                // Bullet velocity components
-                                const vx = Math.cos(bullet.angle);
-                                const vy = Math.sin(bullet.angle);
-                                
-                                // Calculate reflection: v' = v - 2(v·n)n
-                                const dot = vx * nx + vy * ny;
-                                const newVx = vx - 2 * dot * nx;
-                                const newVy = vy - 2 * dot * ny;
-                                
-                                // Update bullet angle
-                                bullet.angle = Math.atan2(newVy, newVx);
-                            }
-                        } else {
-                            // Rectangular obstacle bounce - simple wall reflection
-                            // Determine which wall was hit and reflect accordingly
-                            const bulletCenterX = bullet.x;
-                            const bulletCenterY = bullet.y;
-                            const obstacleLeft = obstacle.x;
-                            const obstacleRight = obstacle.x + obstacle.width;
-                            const obstacleTop = obstacle.y;
-                            const obstacleBottom = obstacle.y + obstacle.height;
-                            
-                            // Calculate which edge is closest
-                            const distToLeft = Math.abs(bulletCenterX - obstacleLeft);
-                            const distToRight = Math.abs(bulletCenterX - obstacleRight);
-                            const distToTop = Math.abs(bulletCenterY - obstacleTop);
-                            const distToBottom = Math.abs(bulletCenterY - obstacleBottom);
-                            
-                            const minDist = Math.min(distToLeft, distToRight, distToTop, distToBottom);
-                            
-                            if (minDist === distToLeft || minDist === distToRight) {
-                                // Hit left or right wall - reflect X component
-                                bullet.angle = Math.PI - bullet.angle;
-                            } else {
-                                // Hit top or bottom wall - reflect Y component
-                                bullet.angle = -bullet.angle;
-                            }
-                        }
-                    } else {
-                        this.bullets.splice(bulletIndex, 1);
-                    }
-                }
-            });
-        });
-    }
-
-    /**
-     * Shoot a bullet from a tank
-     * @param {Object} tank - Tank shooting the bullet
-     */
-    shootBullet(tank) {
-        
-        // Apply spread shot powerup (stacking)
-        const spreadShotStacks = tank.powerups.spreadShot.length;
-        if (spreadShotStacks > 0) {
-            // Calculate number of bullets based on stacks (3^stacks)
-            const bulletCount = Math.pow(3, spreadShotStacks);
-            const spreadAngle = GAME_CONFIG.POWERUP_SPREAD_ANGLE;
-            const baseAngle = tank.turretAngle;
-            
-            if (bulletCount === 1) {
-                // Single bullet
-                const bullet = {
-                    x: tank.x + Math.cos(baseAngle) * tank.turretLength,
-                    y: tank.y + Math.sin(baseAngle) * tank.turretLength,
-                    angle: baseAngle,
-                    speed: GAME_CONFIG.BULLET_SPEED,
-                    size: GAME_CONFIG.BULLET_SIZE,
-                    damage: GAME_CONFIG.BULLET_DAMAGE,
-                    owner: (tank.isPlayer ? 'player' : (tank.isAIAlly ? 'aiAlly' : 'ai')),
-                    ownerId: tank.id,
-                    color: tank.color,
-                    bounces: tank.powerups.bouncingBullets.length > 0 ? GAME_CONFIG.POWERUP_BOUNCE_BOUNCES : 0,
-                    spawnTime: Date.now()
-                };
-                this.bullets.push(bullet);
-            } else {
-                // Multiple bullets in spread pattern
-                const totalSpread = (bulletCount - 1) * spreadAngle;
-                const startAngle = baseAngle - totalSpread / 2;
-                
-                for (let i = 0; i < bulletCount; i++) {
-                    const angle = startAngle + (i * totalSpread / (bulletCount - 1));
-                    const bullet = {
-                        x: tank.x + Math.cos(angle) * tank.turretLength,
-                        y: tank.y + Math.sin(angle) * tank.turretLength,
-                        angle: angle,
-                        speed: GAME_CONFIG.BULLET_SPEED,
-                        size: GAME_CONFIG.BULLET_SIZE,
-                        damage: GAME_CONFIG.BULLET_DAMAGE,
-                        owner: (tank.isPlayer ? 'player' : (tank.isAIAlly ? 'aiAlly' : 'ai')),
-                        ownerId: tank.id,
-                        color: tank.color,
-                        bounces: tank.powerups.bouncingBullets.length > 0 ? GAME_CONFIG.POWERUP_BOUNCE_BOUNCES : 0,
-                        spawnTime: Date.now()
-                    };
-                    this.bullets.push(bullet);
-                }
-            }
-        } else {
-            // Single bullet
-            const bullet = {
-                x: tank.x + Math.cos(tank.turretAngle) * tank.turretLength,
-                y: tank.y + Math.sin(tank.turretAngle) * tank.turretLength,
-                angle: tank.turretAngle,
-                speed: GAME_CONFIG.BULLET_SPEED,
-                size: GAME_CONFIG.BULLET_SIZE,
-                damage: GAME_CONFIG.BULLET_DAMAGE,
-                owner: (tank.isPlayer ? 'player' : (tank.isAIAlly ? 'aiAlly' : 'ai')),
-                ownerId: tank.id,
-                color: tank.color,
-                bounces: tank.powerups.bouncingBullets.length > 0 ? GAME_CONFIG.POWERUP_BOUNCE_BOUNCES : 0,
-                spawnTime: Date.now()
-            };
-            
-            this.bullets.push(bullet);
-        }
-        
-        // Update statistics
-        tank.shotsFired++;
-        const tankStats = this.playerStats.get(tank.id);
-        if (tankStats) {
-            tankStats.shotsFired++;
-        }
-    }
-
-    /**
-     * Check if tank collides with obstacles
-     * @param {Object} tank - Tank to check
-     * @param {number} newX - New X position
-     * @param {number} newY - New Y position
-     * @returns {boolean} True if collision detected
-     */
-    checkTankObstacleCollision(tank, newX, newY) {
-        if (this.collisions) {
-            return this.collisions.checkTankObstacleCollision(tank, newX, newY);
-        }
-        return false;
-    }
-
-    /**
-     * Keep tank within map bounds
-     * @param {Object} tank - Tank to constrain
-     */
-    constrainTankToMap(tank) {
-        if (this.collisions) {
-            this.collisions.constrainTankToMap(tank);
-        }
+        this.initialize(this.canvas, this.numPlayers, this.numAIBots, this.gameMode, this.teamAssignments, this.aiTeamDistribution, this.botSkill);
     }
 
     /**
@@ -1199,18 +1408,37 @@ class MultiTanksGame {
     }
 
     /**
+     * Run one fixed step of the simulation
+     */
+    tick(deltaTime) {
+        if (this.isPaused) return;
+
+        // Music keeps playing through dialogue, so the beat does too
+        this.beat.advance(deltaTime);
+        window.audioSystem.updateSong(this.beat.position);
+
+        if (this.dialog) {
+            this.dialog.update(deltaTime);
+            return;
+        }
+        if (this.gameState === GAME_STATES.PLAYING) this.update(deltaTime);
+    }
+
+    /**
      * Main game loop
      * @param {number} currentTime - Current timestamp
      */
-    gameLoop(currentTime = performance.now()) {
-        if (this.gameState !== GAME_STATES.PLAYING) return;
-        
-        const deltaTime = currentTime - this.lastTime;
+    gameLoop(currentTime) {
+        const frame = Math.min(currentTime - this.lastTime, GAME_CONFIG.MAX_FRAME_MS);
         this.lastTime = currentTime;
-        
-        this.update(deltaTime);
+        this.accumulator += frame * this.pace;
+
+        while (this.accumulator >= GAME_CONFIG.TICK_MS) {
+            this.tick(GAME_CONFIG.TICK_MS);
+            this.accumulator -= GAME_CONFIG.TICK_MS;
+        }
+
         this.render();
-        
         this.animationId = requestAnimationFrame((time) => this.gameLoop(time));
     }
 
@@ -1218,15 +1446,16 @@ class MultiTanksGame {
      * Pause/unpause the game
      */
     togglePause() {
-        this.isPaused = !this.isPaused;
-        if (!this.isPaused && this.gameState === GAME_STATES.PLAYING) {
-            // Reset timing and ensure only one loop
-            this.stopGameLoop();
-            this.lastTime = performance.now();
-            this.gameLoop();
-        } else {
-            this.stopGameLoop();
-        }
+        this.setPaused(!this.isPaused);
+    }
+
+    setPaused(paused) {
+        if (this.gameState !== GAME_STATES.PLAYING || this.isPaused === paused) return;
+        this.isPaused = paused;
+        window.audioSystem.pauseMusic(paused);
+        window.midiHandler.resetAllControls();
+        if (paused) window.menu.showPause();
+        else window.menu.closeOverlay();
     }
 
     /**
@@ -1234,29 +1463,12 @@ class MultiTanksGame {
      */
     stop() {
         this.gameState = GAME_STATES.MENU;
-        if (this.animationId) {
-            cancelAnimationFrame(this.animationId);
-            this.animationId = null;
-        }
-        
+        this.stopGameLoop();
+
         // Stop background music
         if (window.audioSystem) {
             window.audioSystem.stopMusic();
         }
-    }
-
-    /**
-     * Utility function to shuffle array
-     * @param {Array} array - Array to shuffle
-     * @returns {Array} Shuffled array
-     */
-    shuffleArray(array) {
-        const shuffled = [...array];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        return shuffled;
     }
 }
 
