@@ -98,7 +98,7 @@ const Abilities = {
      */
     cast(game, tank, name) {
         const def = HARMONY_CONFIG.CHORDS[name] || HARMONY_CONFIG.MELODIES[name];
-        if (!def || !tank.isAlive) return false;
+        if (!def || !tank.isAlive || game.harmonyOff) return false;
 
         const refuse = (icon) => {
             if (tank.isPlayer) {
@@ -131,7 +131,7 @@ const Abilities = {
      */
     ready(game, tank, name) {
         const def = HARMONY_CONFIG.CHORDS[name] || HARMONY_CONFIG.MELODIES[name];
-        return tank.meter >= def.cost && game.clock >= (tank.cooldowns[name] || 0);
+        return !game.harmonyOff && tank.meter >= def.cost && game.clock >= (tank.cooldowns[name] || 0);
     },
 
     shield(game, tank) {
@@ -206,7 +206,8 @@ const Abilities = {
         game.tanks.forEach(other => {
             if (!other.isAlive || !game.areHostile(tank, other)) return;
             if (distanceBetween(other, tank) > radius) return;
-            game.setStatus(other, 'sleep', other.boss ? HARMONY_CONFIG.LULLABY_BOSS_MS : HARMONY_CONFIG.LULLABY_MS);
+            const usual = other.boss ? HARMONY_CONFIG.LULLABY_BOSS_MS : HARMONY_CONFIG.LULLABY_MS;
+            game.setStatus(other, 'sleep', (other.def && other.def.sleepMs) || usual);
             game.floatText(other.x, other.y - 26, 'zzz', '#e7d6ff');
         });
     },

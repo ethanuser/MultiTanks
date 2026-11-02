@@ -47,7 +47,7 @@ class GamePowerups {
                 return false;
             }
             for (const tank of game.tanks) {
-                if (!tank.isAlive || !tank.powerups || tank.enemyType || tank.boss) continue;
+                if (!tank.isAlive || !tank.powerups || tank.enemyType || tank.boss || tank.isBuddy) continue;
                 const distance = Math.hypot(powerup.x - tank.x, powerup.y - tank.y);
                 if (distance < tank.size / 2 + powerup.size / 2 && this.apply(tank, powerup.type)) {
                     game.puff(powerup.x, powerup.y, '#ffd45e', 6);
@@ -90,11 +90,11 @@ class GamePowerups {
      */
     isUseful(type) {
         const game = this.game;
-        const takers = game.tanks.filter(tank => tank.isAlive && tank.powerups && !tank.enemyType && !tank.boss && !tank.inert);
+        const takers = game.tanks.filter(tank => tank.isAlive && tank.powerups && !tank.enemyType && !tank.boss
+            && !tank.inert && !tank.isBuddy);
         if (type === 'HEALTH') return takers.some(tank => tank.health < tank.maxHealth);
         if (type !== 'HARMONY') return true;
-        const knowsAny = !game.mode.knowsHarmony || game.mode.knowsHarmony();
-        return knowsAny && takers.some(tank => tank.meter < GAME_CONFIG.METER_MAX);
+        return game.harmonyInPlay() && takers.some(tank => tank.meter < GAME_CONFIG.METER_MAX);
     }
 
     getWeightedRandomType() {

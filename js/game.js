@@ -45,6 +45,9 @@ class MultiTanksGame {
         this.lastBeatIndex = 0;
         this.beatless = false;   // True while a recording plays
         this.beatHitUntil = 0;   // Lights the beat bar after a shot on the beat
+        this.harmonyOff = false; // Arenas can be played with no chords or melodies
+        this.enemyBulletCap = Infinity;
+        this.mouse = null;       // Where the pointer is, in art pixels on the canvas
 
         // Game settings
         this.numPlayers = 1;
@@ -359,7 +362,7 @@ class MultiTanksGame {
         tank.lastSafeY = tank.y;
 
         // Initialize statistics
-        if (!tank.enemyType && !tank.boss && !tank.isBuddy) {
+        if (!tank.enemyType && !tank.boss && !tank.isBuddy && !tank.inert) {
             this.playerStats.set(tank.id, {
                 name: tank.name,
                 isAI: tank.isAI,
@@ -402,14 +405,17 @@ class MultiTanksGame {
             health: HARMONY_CONFIG.RALLY_HEALTH,
             maxHealth: HARMONY_CONFIG.RALLY_HEALTH,
             speed: GAME_CONFIG.TANK_SPEED * 1.1,
+            shotDamage: HARMONY_CONFIG.RALLY_DAMAGE,
+            shotCooldown: HARMONY_CONFIG.RALLY_FIRE_MS,
+            fadeEvery: HARMONY_CONFIG.RALLY_FADE_MS,
+            fadesAt: this.clock + HARMONY_CONFIG.RALLY_FADE_MS,
             isAI: true,
             isBuddy: true,
             isAIAlly: owner.isPlayer || owner.isAIAlly,
             team: owner.team,
             faction: owner.faction,
             leader: owner,
-            turretAngle: owner.turretAngle,
-            expiresAt: this.clock + HARMONY_CONFIG.RALLY_MS
+            turretAngle: owner.turretAngle
         });
         this.tanks.push(buddy);
         this.setStatus(buddy, 'spawnProtect', 800);
@@ -510,7 +516,26 @@ class MultiTanksGame {
         return tunes;
     }
 
+    /**
+     * Is there any harmony to speak of here? It stays out of sight until then.
+     */
+    harmonyInPlay() {
+        if (this.harmonyOff) return false;
+        return !this.mode.knowsHarmony || this.mode.knowsHarmony();
+    }
+
+    /**
+     * Where the pointer is pointing, in the world
+     */
+    mouseWorld() {
+        return {
+            x: this.camera.x + this.mouse.x * WORLD.PIXEL,
+            y: this.camera.y + this.mouse.y * WORLD.PIXEL
+        };
+    }
+
     abilityAvailable(tank, name) {
+        if (this.harmonyOff) return false;
         if (this.mode && this.mode.abilityAvailable) return this.mode.abilityAvailable(this, tank, name);
         return true;
     }
@@ -540,7 +565,9 @@ class MultiTanksGame {
         let bestDistance = range;
         this.tanks.forEach(other => {
             if (!other.isAlive || !this.areHostile(tank, other) || this.hasStatus(other, 'hidden')) return;
-            const distance = Math.hypot(other.x - x, other.y - y);
+            // Decoys are there to be looked at
+            const pull = other.isBuddy ? HARMONY_CONFIG.RALLY_TAUNT : 1;
+            const distance = Math.hypot(other.x - x, other.y - y) * pull;
             if (distance < bestDistance) {
                 bestDistance = distance;
                 nearest = other;
@@ -671,21 +698,23 @@ class MultiTanksGame {
      * @param {number} deltaTime - Time since last tick
      */
     updateTanks(deltaTime) {
-        const passive = GAME_CONFIG.METER_PASSIVE_PER_SEC * deltaTime / 1000;
-
         this.tanks.forEach(tank => {
             if (!tank.isAlive) return;
             const startX = tank.x;
             const startY = tank.y;
             tank.moved = false;
 
-            if (tank.expiresAt && this.clock > tank.expiresAt) {
-                this.puff(tank.x, tank.y, '#ffd45e', 10);
-                tank.isAlive = false;
-                return;
+            // Decoys wear away on their own, a little at a time
+            if (tank.fadeEvery && this.clock >= tank.fadesAt) {
+                tank.fadesAt += tank.fadeEvery;
+                tank.health -= 1;
+                if (tank.health <= 0) {
+                    this.puff(tank.x, tank.y, '#ffd45e', 10);
+                    tank.isAlive = false;
+                    return;
+                }
             }
 
-            if (tank.meter < GAME_CONFIG.METER_MAX) tank.meter = Math.min(GAME_CONFIG.METER_MAX, tank.meter + passive);
             this.fadeShield(tank);
 
             const disabled = this.hasStatus(tank, 'sleep') || this.hasStatus(tank, 'stun');
@@ -855,6 +884,10 @@ class MultiTanksGame {
         }
 
         // Handle turret rotation
+        if (playerIndex === 0 && this.mouse && Prompts.usesMouse()) {
+            const point = this.mouseWorld();
+            tank.turretAngle = Math.atan2(point.y - tank.y, point.x - tank.x);
+        }
         if (aimLeft) {
             tank.turretAngle -= tank.turretRotationSpeed;
         }
@@ -881,9 +914,10 @@ class MultiTanksGame {
     scoreRhythm(tank, onBeat) {
         if (onBeat) {
             tank.groove = Math.min(GAME_CONFIG.GROOVE_MAX, tank.groove + 1);
-            this.addMeter(tank, 1 + tank.groove * GAME_CONFIG.GROOVE_METER_BONUS);
-            this.beatHitUntil = this.clock + 140;
-            window.audioSystem.perfect();
+            if (tank.isPlayer) {
+                this.beatHitUntil = this.clock + 140;
+                window.audioSystem.perfect();
+            }
             const stats = this.playerStats.get(tank.id);
             if (stats) stats.bestGroove = Math.max(stats.bestGroove, tank.groove);
         } else {
@@ -901,13 +935,18 @@ class MultiTanksGame {
         const spreadStacks = tank.powerups.spreadShot.length;
         const count = 1 + spreadStacks * 2;
         const spacing = GAME_CONFIG.POWERUP_SPREAD_ANGLE * (spreadStacks > 1 ? 0.75 : 1);
-        const baseDamage = shot.damage + (onBeat ? (this.beatDamageBonus ?? GAME_CONFIG.BEAT_DAMAGE_BONUS) : 0);
+        const baseDamage = (tank.shotDamage ?? shot.damage) + (onBeat ? (this.beatDamageBonus ?? GAME_CONFIG.BEAT_DAMAGE_BONUS) : 0);
         const damage = spreadStacks > 1 ? Math.round(baseDamage * GAME_CONFIG.POWERUP_SPREAD_DAMAGE) : baseDamage;
         const bounces = tank.powerups.bouncingBullets.length > 0 ? GAME_CONFIG.POWERUP_BOUNCE_BOUNCES : 0;
         const echoing = this.hasStatus(tank, 'echo');
         const pal = TANK_PALETTES[tank.palette];
 
-        const shoot = (extraBounces) => {
+        // Harmony is only earned when a shot lands, so a shot on the beat carries its
+        // bonus with it
+        const meter = shot.meter + (onBeat ? 1 + tank.groove * GAME_CONFIG.GROOVE_METER_BONUS : 0);
+        this.addMeter(tank, GAME_CONFIG.METER_ON_SHOT * (onBeat ? 2 : 1));
+
+        const shoot = (extraBounces, strength = 1) => {
             if (!tank.isAlive) return;
             for (let i = 0; i < count; i++) {
                 const angle = tank.turretAngle + (i - (count - 1) / 2) * spacing;
@@ -917,9 +956,9 @@ class MultiTanksGame {
                     angle,
                     speed: shot.speed,
                     size: shot.size,
-                    damage,
+                    damage: Math.max(1, Math.round(damage * strength)),
                     knockback: shot.knockback,
-                    meter: shot.meter,
+                    meter: Math.round(meter * strength),
                     owner: tank,
                     kind: 'shot',
                     color: onBeat ? '#ffd45e' : pal.l,
@@ -929,9 +968,7 @@ class MultiTanksGame {
             }
         };
         shoot(echoing ? 1 : 0);
-        for (let i = 1; echoing && i <= HARMONY_CONFIG.ECHO_REPEATS; i++) {
-            this.after(HARMONY_CONFIG.ECHO_DELAY_MS * i, () => shoot(1));
-        }
+        if (echoing) this.after(HARMONY_CONFIG.ECHO_DELAY_MS, () => shoot(1, HARMONY_CONFIG.ECHO_DAMAGE));
 
         // Vivace fills in the time after a shot: eighths, then triplets, then sixteenths
         const vivace = tank.powerups.rapidFire.length;
@@ -943,7 +980,7 @@ class MultiTanksGame {
             });
         }
 
-        tank.nextShotAt = this.clock + shot.cooldown;
+        tank.nextShotAt = this.clock + (tank.shotCooldown ?? shot.cooldown);
         tank.recoilUntil = this.clock + 110;
         tank.muzzleUntil = this.clock + 70;
         tank.shotsFired++;
@@ -958,6 +995,7 @@ class MultiTanksGame {
      */
     spawnBullet(options) {
         const { angle, speed, owner = null } = options;
+        if (owner && owner.faction === 'dissonance' && this.bullets.length >= this.enemyBulletCap) return null;
         const bullet = {
             size: 9,
             damage: 1,
@@ -990,7 +1028,8 @@ class MultiTanksGame {
         if (type === 'hazard' && target.boss) return;
         if (type !== 'hazard' && type !== 'encore' && this.absorbHit(target)) return;
 
-        const damage = Math.round(amount * (target.damageTaken ?? 1) * 10) / 10;
+        const drowsy = target.def && target.def.drowsy && this.hasStatus(target, 'sleep') ? target.def.drowsy : 1;
+        const damage = Math.round(amount * (target.damageTaken ?? 1) * drowsy * 10) / 10;
         target.health -= damage;
         target.tenutoBeats = 0;
         target.hurtUntil = this.clock + 90;
@@ -1001,8 +1040,10 @@ class MultiTanksGame {
         this.puff(target.x, target.y, TANK_PALETTES[target.palette].l, 3);
 
         if (source) {
-            this.addMeter(source, bullet ? (bullet.meter || 2) : 2);
-            const stats = this.playerStats.get(source.id);
+            // Only shots earn harmony, or chords would pay for themselves
+            if (bullet) this.addMeter(source, bullet.meter || 0);
+            // What a decoy does counts for whoever called it
+            const stats = this.playerStats.get((source.leader || source).id);
             if (stats) stats.damageDealt += damage;
         }
         this.addMeter(target, 1);
@@ -1050,7 +1091,8 @@ class MultiTanksGame {
         // Update kill/death statistics
         if (source) {
             source.kills++;
-            const sourceStats = this.playerStats.get(source.id);
+            this.addMeter(source, GAME_CONFIG.METER_ON_KILL);
+            const sourceStats = this.playerStats.get((source.leader || source).id);
             if (sourceStats) {
                 sourceStats.kills++;
                 sourceStats.killsList.push(tank.name);
@@ -1312,6 +1354,8 @@ class MultiTanksGame {
                 name: stats.name,
                 palette: stats.palette,
                 alive: tank ? tank.isAlive : false,
+                player: !stats.isAI,
+                seat: tank && tank.isPlayer ? `P${tank.id + 1}` : null,
                 kills: stats.kills,
                 damage: Math.round(stats.damageDealt),
                 accuracy: stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0,
@@ -1320,7 +1364,8 @@ class MultiTanksGame {
                 powerups: stats.powerupsCollected
             });
         });
-        return rows.sort((a, b) => b.kills - a.kills || b.damage - a.damage);
+        // People first, then bots, each by how they did
+        return rows.sort((a, b) => b.player - a.player || b.kills - a.kills || b.damage - a.damage);
     }
 
     /**

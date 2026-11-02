@@ -62,6 +62,29 @@ function keyLetters(row, letters) {
     return [...letters].map((text, i) => ({ c: i * 4 + 1.5, r: row, text }));
 }
 
+// One of each of these belongs on a map, so copies of a stretch leave them out
+const ONE_OFF_MARKS = /[*PGTSBD]/g;
+
+/**
+ * Lengthen a stage by repeating a stretch of its columns, enemies and all. Stages
+ * are built from repeating parts, like octaves of keys or ribs of the soundboard.
+ */
+function repeatColumns(rows, from, to, times = 1) {
+    return rows.map(row => {
+        const stretch = row.slice(from, to + 1).replace(ONE_OFF_MARKS, '.');
+        return row.slice(0, to + 1) + stretch.repeat(times) + row.slice(to + 1);
+    });
+}
+
+/**
+ * The same, for a stretch of rows
+ */
+function repeatRows(rows, from, to, times = 1) {
+    const stretch = rows.slice(from, to + 1).map(row => row.replace(ONE_OFF_MARKS, '.'));
+    const copies = Array.from({ length: times }, () => stretch).flat();
+    return [...rows.slice(0, to + 1), ...copies, ...rows.slice(to + 1)];
+}
+
 const CAMPAIGN_WORLDS = [
     // =========================================================================
     // WORLD 1: THE KEYS
@@ -78,22 +101,22 @@ const CAMPAIGN_WORLDS = [
             {
                 id: '1-1',
                 name: 'Middle C',
-                objective: { type: 'reach', text: 'Follow the trail up the octave' },
-                decals: keyLetters(16, 'BCDEFGABC'),
+                objective: { type: 'reach', text: 'Follow the trail up the keys' },
+                decals: keyLetters(16, 'BCDEFGABCDEFGABC'),
                 intro: [
                     { who: 'clef', text: 'Pip. Wake up, little one. Listen.' },
                     { who: 'pip', text: 'I can\'t hear anything.' },
                     { who: 'clef', text: 'Exactly. In a hundred years the Old Grand has never once been silent. Last night, every note in it disappeared.' },
                     { who: 'tock', text: 'Tick tock! I saw them go! Up the keys and under the fallboard, the whole scale, dragged off by something in the dark!' },
                     { who: 'clef', text: 'Then that is the way we go. Every note walks the same road, Pip. Key, hammer, string, damper, bridge, soundboard. Whatever took them went down it.' },
-                    { who: 'clef', text: 'Take Tock, he keeps the time. I will go round by the pin block and meet you at the strings. Now hurry. The next C, then north.', hint: 'Drive: {drive}.  Aim: {aim}.  Fire: {shoot}.' }
+                    { who: 'clef', text: 'Take Tock, he keeps the time. I will go round by the pin block and meet you at the strings. Now hurry. Up the keys, then north.', hint: 'Drive: {drive}.  Aim: {aim}.  Fire: {shoot}.' }
                 ],
                 outro: [
                     { who: 'pip', text: 'Tock, I hit one of those things and it stopped being angry. It rang, just for a moment, and then it flew away.' },
                     { who: 'tock', text: 'That was a Quaver! That was one of ours! They are not monsters, Pip, they are the stolen notes, knocked out of tune!' },
                     { who: 'pip', text: 'Then every one we set right can go home.' }
                 ],
-                map: [
+                map: repeatColumns([
                     '#####################################',
                     '#......##..##......##..##..##.......#',
                     '#......##..##......##..##..##.......#',
@@ -112,26 +135,27 @@ const CAMPAIGN_WORLDS = [
                     '#kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk#',
                     '#...................................#',
                     '#####################################'
-                ]
+                ], 4, 31)
             },
             {
                 id: '1-2',
                 name: 'The Black Keys',
                 objective: { type: 'clear', text: 'Retune every wrong note' },
                 learn: ['shield'],
-                decals: keyLetters(22, 'DEFGABCDEF'),
+                decals: keyLetters(29, 'DEFGABCDEFGA'),
                 intro: [
                     { who: 'tock', text: 'The trail runs north, between the black keys. And look who is standing guard on them.' },
                     { who: 'pip', text: 'Metronomes. We can\'t leave those behind us.' },
                     { who: 'tock', text: 'They only fire on the beat, so listen and you will know when. Shots of yours that land on the beat hit harder too.', hint: 'Fire as the marks meet in the middle of the beat bar.' },
-                    { who: 'tock', text: 'And here, your first chord. Pianissimo, very very soft. Whatever is coming at you just misses the point.', hint: 'Pianissimo: {chord:shield}. It stops 5 hits, fewer as it fades.' }
+                    { who: 'tock', text: 'And here, your first chord. Pianissimo, very very soft. Whatever is coming at you just misses the point.', hint: 'Pianissimo: {chord:shield}. It stops 5 hits, fewer as it fades.' },
+                    { who: 'tock', text: 'Chords cost harmony, the gold bar. Your shots fill it, and the ones that land fill it much faster, so stay in the fight.' }
                 ],
                 outro: [
                     { who: 'pip', text: 'There is a gouge in the lacquer here. Something heavy dragged the notes through.' },
                     { who: 'tock', text: 'Hammer marks. Oh no. Oh no no no. And the road runs right along this key to the hammer line.' },
                     { who: 'tock', text: 'Pip, there is a draught coming up from under the key slip. Something is down there, if you want to look.' }
                 ],
-                map: [
+                map: repeatRows(repeatColumns([
                     '########################################',
                     '#......................................#',
                     '#.....m.........m.......m.........E....#',
@@ -156,7 +180,7 @@ const CAMPAIGN_WORLDS = [
                     '#kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk#',
                     '#......................................#',
                     '########################################'
-                ]
+                ], 11, 18), 4, 10)
             },
             {
                 id: '1-S',
@@ -177,7 +201,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'pencil', text: '"Cut the 88 keys today. Cut one over, in case of a slip."' },
                     { who: 'pip', text: 'One over?' }
                 ],
-                map: [
+                map: repeatColumns([
                     '############################################',
                     '#......#..........O...O...O..........#.....#',
                     '#.P....#...q.......................m.#..*..#',
@@ -192,7 +216,7 @@ const CAMPAIGN_WORLDS = [
                     '#...........x.......*.............x........#',
                     '#...q.................................*....#',
                     '############################################'
-                ]
+                ], 12, 28)
             },
             {
                 id: '1-B',
@@ -214,7 +238,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'thump', text: 'So tired. Eighty years. I only wanted a rest.' },
                     { who: 'pip', text: 'That is what a rest is for, Sir Thump. It\'s part of the music.' },
                     { who: 'thump', text: 'Go on, then. I will hold the line. Take this. The voice left a tune in my head, low, middle, high. Perhaps it will serve you better.' },
-                    { who: 'tock', text: 'The Rising Call! It brings a friend!', hint: 'Rising Call: {melody:rally}, one after another.' },
+                    { who: 'tock', text: 'The Rising Call! Little echoes of you, for the wrong notes to chase instead!', hint: 'Rising Call: {melody:rally}, one after another.' },
                     { who: 'tock', text: 'Listen, Pip. The hammer fell. Key, hammer. Two links of the road are ringing again!' }
                 ],
                 reward: { melody: 'rally' },
@@ -257,7 +281,7 @@ const CAMPAIGN_WORLDS = [
             {
                 id: '2-1',
                 name: 'The Pin Block',
-                objective: { type: 'defend', text: 'Protect the Tuning Fork', beats: 120 },
+                objective: { type: 'defend', text: 'Protect the Tuning Fork', beats: 160 },
                 learn: ['heal'],
                 intro: [
                     { who: 'clef', text: 'Pip! You got past the hammers! Over here. Every string in the piano is held by one of these pins.' },
@@ -318,7 +342,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'tock', text: 'Pip, the forest is getting louder. It is the only thing left in here that is.' },
                     { who: 'pip', text: 'Then that is where we\'re going. Was that a door, back there in the ironwork?' }
                 ],
-                map: [
+                map: repeatRows([
                     '##############################',
                     '#.........GGGGGGGG...........#',
                     '#............................#',
@@ -364,7 +388,7 @@ const CAMPAIGN_WORLDS = [
                     '#.........P....P.............#',
                     '#............................#',
                     '##############################'
-                ]
+                ], 5, 29)
             },
             {
                 id: '2-S',
@@ -383,7 +407,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'tock', text: 'And there is that handwriting again, on the iron.' },
                     { who: 'pencil', text: '"Did not need the spare after all. It is too fine to burn. I cannot say why."' }
                 ],
-                map: [
+                map: repeatColumns([
                     '################################################',
                     '#........#.........#.......#.........#....*....#',
                     '#..P.....#.........#.......#....q....#.........#',
@@ -400,7 +424,7 @@ const CAMPAIGN_WORLDS = [
                     '#........#...q.....#.......#....t....#.........#',
                     '#.....E..#.........#.......#.........#.........#',
                     '################################################'
-                ]
+                ], 10, 26)
             },
             {
                 id: '2-B',
@@ -474,7 +498,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'tock', text: 'Pip, I just heard something. One note, very far down, played very softly.' },
                     { who: 'pip', text: 'I thought all the notes were gone.' }
                 ],
-                map: [
+                map: repeatColumns([
                     '############################################################',
                     '#....................................E.....#...............#',
                     '#...##...##...##...##...##...##...##...##..#...............#',
@@ -491,12 +515,12 @@ const CAMPAIGN_WORLDS = [
                     '#................H.........................#...............#',
                     '#..........................................#...............#',
                     '############################################################'
-                ]
+                ], 4, 38)
             },
             {
                 id: '3-2',
                 name: 'The Quiet Room',
-                objective: { type: 'survive', text: 'Hold out until the room lets go', beats: 100 },
+                objective: { type: 'survive', text: 'Hold out until the room lets go', beats: 140 },
                 intro: [
                     { who: 'tock', text: 'Pip. The door shut behind us.' },
                     { who: 'pip', text: 'They wanted us in here. Back to back, everyone.' },
@@ -556,7 +580,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'pip', text: 'There is writing inside the lid.' },
                     { who: 'pencil', text: '"Set the spare at the very top of the bed, behind the cheek block, and strung it. Nobody will ever know. It will be safe there."' }
                 ],
-                map: [
+                map: repeatColumns([
                     '##############################################',
                     '#.....#.........#...........#.........#......#',
                     '#..P..#...r.....#...........#....r....#...*..#',
@@ -571,7 +595,7 @@ const CAMPAIGN_WORLDS = [
                     '#.....#.........#.....s.....#....r....#......#',
                     '#.....#.........#...........#.........#...*..#',
                     '##############################################'
-                ]
+                ], 29, 37)
             },
             {
                 id: '3-B',
@@ -585,7 +609,8 @@ const CAMPAIGN_WORLDS = [
                     { who: 'pip', text: 'You\'re holding them all down. Every damper in the piano.' },
                     { who: 'mute', text: 'Sound is pain. Every note ends. It is kinder if they never begin. Shhhhhhh.' },
                     { who: 'tock', text: 'Your shots won\'t get through the front of that thing! Get it to charge into a wall, then hit it while it\'s dazed!' },
-                    { who: 'tock', text: 'And stay out of the dark patches. No chord will sound in there!' }
+                    { who: 'tock', text: 'And stay out of the dark patches. No chord will sound in there!' },
+                    { who: 'tock', text: 'It will call Sforzandi, too. Nothing touches them while they are awake, so sing them to sleep. The Mute hates that even more!', hint: 'Lullaby: {melody:lullaby}, one after another.' }
                 ],
                 outro: [
                     { who: 'mute', text: 'Oh. Was that what it was like? The last note. It sounded so nice, going away.' },
@@ -593,7 +618,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'mute', text: 'I only held them down. The one who asked me to, it has never been played. Not once. Can you imagine.' },
                     { who: 'tock', text: 'Never played? Every key gets played! There are only eighty-eight of them!' },
                     { who: 'mute', text: 'Yes. That is what everybody says. Take this echo, little one. It has nowhere left to go.' },
-                    { who: 'tock', text: 'Echo! Your shots ring twice, and bounce!', hint: 'Echo: {melody:echo}, one after another.' }
+                    { who: 'tock', text: 'Echo! Your shots ring twice!', hint: 'Echo: {melody:echo}, one after another.' }
                 ],
                 reward: { melody: 'echo' },
                 map: [
@@ -638,8 +663,8 @@ const CAMPAIGN_WORLDS = [
                 objective: { type: 'reach', text: 'Follow the crack across the ribs' },
                 door: { melody: [3, 5, 2, 4], hint: 'Burned into the rib:' },
                 decals: [
-                    { c: 51, r: 4, text: '86' }, { c: 53, r: 4, text: '87' }, { c: 55, r: 4, text: '88' },
-                    { c: 53, r: 6, text: '89' }
+                    { c: 75, r: 4, text: '86' }, { c: 77, r: 4, text: '87' }, { c: 79, r: 4, text: '88' },
+                    { c: 77, r: 6, text: '89' }
                 ],
                 intro: [
                     { who: 'pip', text: 'The bridge. Every string ends here. This is where the sound goes down into the board.' },
@@ -651,7 +676,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'tock', text: 'There are marks here, Pip. Pencil marks, on the rib. Someone was counting.' },
                     { who: 'pip', text: '86, 87, 88. Then a line through it. And after that, very small, 89.' }
                 ],
-                map: [
+                map: repeatColumns([
                     '#################################################################',
                     '#............#...........#...........#...........#......#.......#',
                     '#............#.......................#...w.......#...E..#.......#',
@@ -669,7 +694,7 @@ const CAMPAIGN_WORLDS = [
                     '#............#.....c.........c.......#.......^..........#...r...#',
                     '#............#...........#...........#...........#......#.......#',
                     '#################################################################'
-                ]
+                ], 14, 37)
             },
             {
                 id: '4-S',
@@ -687,7 +712,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'pip', text: 'It is the same handwriting. It is the last of it.' },
                     { who: 'pencil', text: '"It is the best key I ever cut. I am sorry."' }
                 ],
-                map: [
+                map: repeatColumns([
                     '##################################################',
                     '#...*...#......^^^......#....s.....#.............#',
                     '#.......#......^^^......#..........#.............#',
@@ -701,7 +726,7 @@ const CAMPAIGN_WORLDS = [
                     '#.......#...w......*.......###.....#.............#',
                     '#............................................*...#',
                     '##################################################'
-                ]
+                ], 9, 22)
             },
             {
                 id: '4-2',
@@ -719,7 +744,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'clef', text: 'It is not a weapon. Remember that when the time comes.' }
                 ],
                 reward: { melody: 'finale' },
-                map: [
+                map: repeatColumns([
                     '########################################################',
                     '#....#......m.......#.......#.....m......#.............#',
                     '#..s.#..............#...d...#............#.......t.....#',
@@ -738,7 +763,7 @@ const CAMPAIGN_WORLDS = [
                     '#..s.#..............#...d...#............#.......t.....#',
                     '#....#......m.......#.......#.....m......#.............#',
                     '########################################################'
-                ]
+                ], 20, 35)
             },
             {
                 id: '4-B',
@@ -754,7 +779,7 @@ const CAMPAIGN_WORLDS = [
                     { who: 'pip', text: 'You\'re a key.' },
                     { who: 'key89named', text: 'One too many. The maker cut me over and hid me here at the end, behind the case, where no hand could ever reach.' },
                     { who: 'key89named', text: 'A hundred years of listening to all of them get played. So I took every note there was. Now nobody gets played. It is only fair.' },
-                    { who: 'tock', text: 'It knows everything the others knew, Pip! Watch the floor!' }
+                    { who: 'tock', text: 'It knows everything the others knew, Pip! Watch the floor, and save your harmony. When the chorus comes, only The Whole Scale can clear it!', hint: 'The Whole Scale: {melody:finale}, one after another.' }
                 ],
                 reward: {},
                 map: [

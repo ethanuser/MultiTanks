@@ -80,6 +80,8 @@ const CampaignSave = {
     }
 };
 
+const FORK_SHOT = { damage: 3, range: 620, ringEveryBeats: 8, ringShots: 16 };
+
 // What each kind of stage is asking for, at a glance
 const OBJECTIVE_ICONS = { reach: 'flag', clear: 'note', collect: 'star', survive: 'wait', defend: 'wait', boss: 'crown' };
 
@@ -127,6 +129,71 @@ const CampaignMode = {
      */
     keysAreSilent() {
         return !CampaignSave.get().finished;
+    },
+
+    /**
+     * The difficulty as it applies to one stage
+     */
+    stageRules(level, game) {
+        const rules = CAMPAIGN_CONFIG.DIFFICULTY[this.difficulty];
+        const stage = CAMPAIGN_CONFIG.STAGE_THREAT[level.id] ?? 1;
+        const crew = CAMPAIGN_CONFIG.ENEMY_SCALING.smallCrew[this.extraTanks(game)] ?? 1;
+        // Forte's patterns make a boss hit as hard as on Fortissimo, so it needs all of the easing
+        const eased = rules.patterns && level.boss ? stage : Math.sqrt(Math.min(1, stage));
+        const tuned = rules.threatCap === 1 ? Math.min(1, eased) : stage * crew;
+        const threat = rules.threatCap === undefined ? 1 : tuned;
+        return {
+            ...rules,
+            enemyHealthMultiplier: rules.enemyHealthMultiplier * Math.sqrt(threat),
+            enemyDamageMultiplier: rules.enemyDamageMultiplier * Math.sqrt(threat),
+            enemyCount: rules.enemyCount * threat
+        };
+    },
+
+    /**
+     * How many tanks there are in the crew past the first
+     */
+    extraTanks(game) {
+        return Math.max(0, game.numPlayers - 1) + game.numAIBots;
+    },
+
+    /**
+     * How many enemies there are for each one drawn on the map
+     */
+    enemyScale(game, difficulty) {
+        const scaling = CAMPAIGN_CONFIG.ENEMY_SCALING;
+        return difficulty.enemyCount * (1 + this.extraTanks(game) * scaling.countPerTank)
+            * (1 + this.crowd(game) * scaling.crowdCount);
+    },
+
+    /**
+     * How many tanks the crew has past the point where it starts to swamp a stage
+     */
+    crowd(game) {
+        return Math.max(0, this.extraTanks(game) - CAMPAIGN_CONFIG.ENEMY_SCALING.crowdFrom);
+    },
+
+    /**
+     * How much tougher a big crew makes everything
+     */
+    crowdToughness(game) {
+        return 1 + this.crowd(game) * CAMPAIGN_CONFIG.ENEMY_SCALING.crowdHealth;
+    },
+
+    /**
+     * The swarm grows with the crew. Anything that fires patterns only grows, and
+     * slowly, for a big crew, or bullets would outgrow the crew's firepower.
+     */
+    enemiesPerMark(game, type, difficulty) {
+        if (ENEMY_TYPES[type].swarm) return this.enemyScale(game, difficulty);
+        return difficulty.enemyCount * (1 + this.crowd(game) * CAMPAIGN_CONFIG.ENEMY_SCALING.crowdPatterns);
+    },
+
+    addEnemy(game, type, x, y, difficulty) {
+        const enemy = Enemies.create(game, type, x, y, difficulty);
+        this.enemyList.push(enemy);
+        game.tanks.push(enemy);
+        return enemy;
     },
 
     /**
@@ -185,8 +252,11 @@ const CampaignMode = {
         this.finished = false;
         this.resolving = null;
         this.waveIndex = 0;
+        this.respawning = 0;
         this.nearDoor = null;
-        this.spares = (CAMPAIGN_CONFIG.LIVES_PER_LEVEL + (CampaignSave.hasReward('spare') ? 1 : 0)) * Math.max(1, game.numPlayers);
+        this.rules = this.stageRules(level, game);
+        const spares = this.rules.spares;
+        this.spares = (spares + (CampaignSave.hasReward('spare') ? 1 : 0)) * Math.max(1, game.numPlayers);
         this.beatsLeft = level.objective.beats || 0;
 
         const { map, marks } = TileMap.parse(level.map, level.theme || level.world.theme);
@@ -194,9 +264,10 @@ const CampaignMode = {
         game.setMap(map);
         this.readMap(game, map, marks);
 
-        const difficulty = CAMPAIGN_CONFIG.DIFFICULTY[this.difficulty];
+        const difficulty = this.rules;
         this.attackBudget = difficulty.attackTokens;
         game.pace = difficulty.pace;
+        game.enemyBulletCap = difficulty.bulletCap;
         this.placeCrew(game, marks);
         this.placeEverythingElse(game, marks, difficulty);
         game.centerCamera();
@@ -257,6 +328,7 @@ const CampaignMode = {
         game.aiBots = [];
 
         const armor = CampaignSave.hasReward('armor') ? 4 : 0;
+        const hitSize = GAME_CONFIG.TANK_SIZE * (CAMPAIGN_CONFIG.DIFFICULTY[this.difficulty].crewHitbox || 1);
         const meterStart = GAME_CONFIG.METER_START + (CampaignSave.hasReward('tuned') ? 25 : 0);
 
         // Create human players
@@ -269,6 +341,7 @@ const CampaignMode = {
                 name: i === 0 ? 'Pip' : `Player ${i + 1}`,
                 isPlayer: true,
                 faction: 'crew',
+                hitSize,
                 health,
                 maxHealth: health,
                 meter: meterStart
@@ -290,9 +363,10 @@ const CampaignMode = {
                 isAI: true,
                 isAIAlly: true,
                 faction: 'crew',
+                hitSize,
                 health,
                 maxHealth: health,
-                skill: this.difficulty === 'HARD' ? 'HARD' : 'NORMAL'
+                skill: game.botSkill
             });
             this.aiAllies.push(ally);
             game.tanks.push(ally);
@@ -325,11 +399,17 @@ const CampaignMode = {
     },
 
     placeEverythingElse(game, marks, difficulty) {
+        // Each mark on the map is good for this many enemies, which can be less than
+        // one. Starting the count near one means a stage always has somebody in it.
+        let owed = 0.999;
         marks.forEach(mark => {
             if (ENEMY_MARKS[mark.char]) {
-                const enemy = Enemies.create(game, ENEMY_MARKS[mark.char], mark.x, mark.y, difficulty);
-                this.enemyList.push(enemy);
-                game.tanks.push(enemy);
+                let first = true;
+                for (owed += this.enemiesPerMark(game, ENEMY_MARKS[mark.char], difficulty); owed >= 1; owed--) {
+                    const spot = first ? mark : this.freeSpotNear(game, mark);
+                    this.addEnemy(game, ENEMY_MARKS[mark.char], spot.x, spot.y, difficulty);
+                    first = false;
+                }
             } else if (mark.char === 'B') {
                 const boss = Bosses.create(game, this.level.boss, mark.x, mark.y, difficulty);
                 this.bossTank = boss;
@@ -345,7 +425,8 @@ const CampaignMode = {
             } else if (mark.char === 'S') {
                 this.waveSpawns.push({ x: mark.x, y: mark.y });
             } else if (mark.char === 'T') {
-                const health = 40;
+                // It has to stand up to whatever the crew is facing
+                const health = Math.round(90 * Math.max(1, this.enemyScale(game, difficulty)) * difficulty.enemyDamageMultiplier);
                 this.fork = game.createTank({
                     id: 'fork',
                     x: mark.x,
@@ -361,7 +442,8 @@ const CampaignMode = {
                     isAI: true,
                     inert: true,
                     immobile: true,
-                    keepWhenDead: true
+                    keepWhenDead: true,
+                    onBeat: (fork, beatIndex) => this.forkBeat(game, fork, beatIndex)
                 });
                 game.tanks.push(this.fork);
             }
@@ -382,8 +464,9 @@ const CampaignMode = {
     },
 
     onBeat(game, beatIndex) {
-        const difficulty = CAMPAIGN_CONFIG.DIFFICULTY[this.difficulty];
+        const difficulty = this.rules;
         this.attackBudget = Math.min(difficulty.attackTokens * 2, this.attackBudget + difficulty.attackTokens);
+        Enemies.organizeSwarm(game, difficulty);
 
         const type = this.level.objective.type;
         if ((type === 'survive' || type === 'defend') && !this.finished) {
@@ -398,15 +481,13 @@ const CampaignMode = {
         const sets = this.level.waves.sets;
         const set = sets[Math.min(this.waveIndex, sets.length - 1)];
         this.waveIndex++;
-        const difficulty = CAMPAIGN_CONFIG.DIFFICULTY[this.difficulty];
+        const difficulty = this.rules;
         let i = 0;
         Object.entries(set).forEach(([type, count]) => {
-            for (let n = 0; n < count; n++) {
+            const total = Math.max(1, Math.round(count * this.enemiesPerMark(game, type, difficulty)));
+            for (let n = 0; n < total; n++) {
                 const point = this.waveSpawns[i++ % this.waveSpawns.length];
-                const enemy = Enemies.create(game, type, point.x, point.y, difficulty);
-                enemy.alerted = true;
-                this.enemyList.push(enemy);
-                game.tanks.push(enemy);
+                this.addEnemy(game, type, point.x, point.y, difficulty).alerted = true;
                 game.ring(point.x, point.y, 50, '#ec8cf8', 400);
             }
         });
@@ -415,7 +496,7 @@ const CampaignMode = {
     updateNotes(game) {
         this.notes.forEach(note => {
             if (note.taken) return;
-            const collector = game.tanks.find(tank => tank.isAlive && tank.faction === 'crew' && !tank.inert
+            const collector = game.tanks.find(tank => tank.isAlive && tank.faction === 'crew' && !tank.inert && !tank.isBuddy
                 && Math.hypot(tank.x - note.x, tank.y - note.y) < tank.size / 2 + 20);
             if (collector) {
                 note.taken = true;
@@ -446,13 +527,39 @@ const CampaignMode = {
     },
 
     /**
+     * The Tuning Fork stands up for itself: a shot at the nearest wrong note on every
+     * beat, and a ring of true notes in all directions every few bars
+     */
+    forkBeat(game, fork, beatIndex) {
+        const shot = (angle) => game.spawnBullet({
+            x: fork.x + Math.cos(angle) * 30,
+            y: fork.y + Math.sin(angle) * 30,
+            angle,
+            speed: GAME_CONFIG.SHOT.speed,
+            damage: FORK_SHOT.damage * this.rules.enemyHealthMultiplier,
+            owner: fork,
+            kind: 'shot',
+            color: '#ffd45e'
+        });
+        const target = game.nearestHostile(fork, fork.x, fork.y, FORK_SHOT.range);
+        if (target) {
+            fork.turretAngle = Math.atan2(target.y - fork.y, target.x - fork.x);
+            shot(fork.turretAngle);
+        }
+        if (beatIndex % FORK_SHOT.ringEveryBeats === 0) {
+            for (let i = 0; i < FORK_SHOT.ringShots; i++) shot(i / FORK_SHOT.ringShots * Math.PI * 2);
+            game.ring(fork.x, fork.y, 90, '#ffd45e', 300);
+        }
+    },
+
+    /**
      * Allies catch up if they are left behind, and with more than one player,
      * nobody can drive off the edge of the shared screen.
      */
     keepCrewTogether(game) {
         const leader = window.aiBehavior.leaderOf({ x: 0, y: 0 });
         const humans = game.players.filter(tank => tank.isAlive);
-        if (game.numPlayers === 0) this.carryWatchedCrew(game);
+        if (humans.length === 0) this.carryWatchedCrew(game);
         if (humans.length > 0) {
             // Bots cannot dash, so a gap the leader crossed would strand them for good
             const field = game.map.field([leader]);
@@ -570,7 +677,7 @@ const CampaignMode = {
     checkObjective(game) {
         if (this.finished) return;
         const { type } = this.level.objective;
-        const crewHere = tile => game.tanks.some(tank => tank.isAlive && tank.faction === 'crew' && !tank.inert
+        const crewHere = tile => game.tanks.some(tank => tank.isAlive && tank.faction === 'crew' && !tank.inert && !tank.isBuddy
             && Math.floor(tank.x / WORLD.TILE) === tile.c && Math.floor(tank.y / WORLD.TILE) === tile.r);
 
         if (type === 'reach' && this.goalTiles.some(crewHere)) {
@@ -607,6 +714,7 @@ const CampaignMode = {
         if (tank.isPlayer && !this.finished) {
             if (this.spares > 0) {
                 this.spares--;
+                this.respawning++;
                 game.after(2200, () => this.respawn(game, tank));
                 return;
             }
@@ -628,15 +736,16 @@ const CampaignMode = {
         });
     },
 
+    /**
+     * A stage is only lost once the whole crew is down. Allies fight on without you.
+     */
     checkDefeat(game) {
-        const humans = game.numPlayers;
-        const standing = humans > 0
-            ? game.players.some(tank => tank.isAlive)
-            : this.aiAllies.some(tank => tank.isAlive);
+        const standing = this.respawning > 0 || [...game.players, ...this.aiAllies].some(tank => tank.isAlive);
         if (!standing && !this.finished) this.fail(game, 'The crew has fallen silent.');
     },
 
     respawn(game, tank) {
+        this.respawning--;
         if (this.finished) return;
         const friend = game.players.find(other => other.isAlive);
         const spot = friend ? this.freeSpotNear(game, friend) : { x: tank.lastSafeX, y: tank.lastSafeY };
@@ -678,7 +787,7 @@ const CampaignMode = {
             this.resolving = 'waiting';
             game.showBanner('Play The Whole Scale', Prompts.melody('finale'), 60000);
             // With nobody at the keys, the crew plays it for them
-            if (game.numPlayers === 0) game.after(1500, () => this.finishResolution(game));
+            if (!game.players.some(tank => tank.isAlive)) game.after(1500, () => this.finishResolution(game));
         });
     },
 

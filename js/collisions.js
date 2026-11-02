@@ -75,8 +75,17 @@ class GameCollisions {
                 const push = (reach - distance) * GAME_CONFIG.TANK_PUSH_STRENGTH;
                 const nx = dx / distance;
                 const ny = dy / distance;
-                const moveA = a.immobile ? 0 : (b.immobile ? 2 : 1);
-                const moveB = b.immobile ? 0 : (a.immobile ? 2 : 1);
+                // A swarm cannot wall a tank in: its small fry get shoved out of the way
+                const givesWay = (tank, other) => tank.enemyType && tank.def.swarm && !other.enemyType;
+                let moveA = a.immobile ? 0 : (b.immobile ? 2 : 1);
+                let moveB = b.immobile ? 0 : (a.immobile ? 2 : 1);
+                if (givesWay(a, b)) {
+                    moveA = 2;
+                    moveB = 0;
+                } else if (givesWay(b, a)) {
+                    moveA = 0;
+                    moveB = 2;
+                }
                 const ax = a.x - nx * push * moveA;
                 const ay = a.y - ny * push * moveA;
                 const bx = b.x + nx * push * moveB;
@@ -115,7 +124,8 @@ class GameCollisions {
      */
     isTankInvincible(tank) {
         return (tank.powerups && tank.powerups.invincibility && tank.powerups.invincibility.length > 0)
-            || this.game.hasStatus(tank, 'spawnProtect');
+            || this.game.hasStatus(tank, 'spawnProtect')
+            || !!(tank.def && tank.def.wakeful && !this.game.hasStatus(tank, 'sleep'));
     }
 
     /**
@@ -156,7 +166,7 @@ class GameCollisions {
 
             for (const tank of game.tanks) {
                 if (!tank.isAlive || tank.intangible || !game.bulletHostileTo(bullet, tank)) continue;
-                const reach = tank.size / 2 + bullet.size / 2;
+                const reach = (tank.hitSize || tank.size) / 2 + bullet.size / 2;
                 if (Math.abs(tank.x - bullet.x) > reach || Math.abs(tank.y - bullet.y) > reach) continue;
                 if (Math.hypot(tank.x - bullet.x, tank.y - bullet.y) >= reach) continue;
                 if (this.hitTank(bullet, tank)) return;
@@ -208,7 +218,7 @@ class GameCollisions {
         if (game.hasStatus(tank, 'dash')) return false;
 
         // Armored fronts turn shots aside
-        if (tank.frontArmor) {
+        if (tank.frontArmor && !game.hasStatus(tank, 'sleep')) {
             const facing = tank.armorAngle ?? tank.turretAngle;
             const incoming = Math.atan2(bullet.y - tank.y, bullet.x - tank.x);
             if (Math.abs(normalizeAngle(incoming - facing)) < tank.frontArmor) {
@@ -216,6 +226,7 @@ class GameCollisions {
                 game.spark(bullet.x, bullet.y);
                 game.floatIcon(bullet.x, bullet.y - 10, 'shield');
                 window.audioSystem.shieldBlock();
+                this.creditBlockedShot(bullet);
                 return true;
             }
         }
@@ -224,6 +235,7 @@ class GameCollisions {
             bullet.dead = true;
             game.spark(bullet.x, bullet.y);
             window.audioSystem.shieldBlock();
+            this.creditBlockedShot(bullet);
             return true;
         }
 
@@ -240,6 +252,15 @@ class GameCollisions {
         }
         bullet.dead = true;
         return true;
+    }
+
+    /**
+     * A shot that reached its target but was stopped still counts for something
+     */
+    creditBlockedShot(bullet) {
+        if (bullet.ownerTank && bullet.meter) {
+            this.game.addMeter(bullet.ownerTank, bullet.meter * GAME_CONFIG.METER_ON_BLOCK);
+        }
     }
 
     /**

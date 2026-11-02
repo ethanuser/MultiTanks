@@ -25,21 +25,23 @@ const BOSS_TYPES = {
         ]
     },
     mute: {
-        name: 'The Great Mute', title: 'Keeper of the Felt', palette: 'hush', size: 100, health: 165, speed: 0.75,
-        turretLength: 54, restBeats: 3, frontArmor: 1.05, power: 0.6,
+        name: 'The Great Mute', title: 'Keeper of the Felt', palette: 'hush', size: 100, health: 280, speed: 0.75,
+        turretLength: 54, restBeats: 3, frontArmor: 1.05, power: 0.6, summonCount: 3,
+        drowsy: 2.5, sleepMs: 4000, // Sound is its enemy, but a Lullaby undoes it
         phases: [
-            { below: 1, attacks: ['charge', 'hushZone', 'hushOrbs'] },
-            { below: 0.62, attacks: ['charge', 'hushZone', 'hushOrbs', 'summonDampers'] },
-            { below: 0.3, attacks: ['charge', 'charge', 'hushZone', 'hushOrbs'], rest: 1 }
+            { below: 1, attacks: ['charge', 'hushZone', 'hushOrbs', 'summonDampers'] },
+            { below: 0.62, attacks: ['charge', 'summonWakers', 'hushZone', 'hushOrbs', 'summonDampers'] },
+            { below: 0.3, attacks: ['charge', 'summonWakers', 'charge', 'hushZone', 'summonDampers'], rest: 1 }
         ]
     },
     key89: {
-        name: 'The Eighty-Ninth Key', title: 'Never Played', palette: 'bruise', size: 88, health: 240, speed: 1.1,
-        turretLength: 46, restBeats: 2, power: 1.2, slamBeats: 3,
+        name: 'The Eighty-Ninth Key', title: 'Never Played', palette: 'bruise', size: 88, health: 440, speed: 1.1,
+        turretLength: 46, restBeats: 2, power: 0.9, slamBeats: 3, summonCount: 5,
+        chorusPhases: [1, 2], // Opens these phases with the Wrong Chorus
         phases: [
-            { below: 1, attacks: ['slam', 'pluck', 'volley'] },
-            { below: 0.66, attacks: ['spiral', 'hushZone', 'pluck', 'summon'] },
-            { below: 0.33, attacks: ['triplePluck', 'spiral', 'slam', 'hushOrbs', 'keyWave'], rest: 1 }
+            { below: 1, attacks: ['slam', 'pluck', 'volley', 'summon'] },
+            { below: 0.66, attacks: ['spiral', 'hushZone', 'summonWakers', 'pluck', 'summon'] },
+            { below: 0.33, attacks: ['triplePluck', 'spiral', 'chorus', 'slam', 'summonWakers', 'keyWave', 'summon'], rest: 1 }
         ],
         resolves: true // Cannot be destroyed, only played
     }
@@ -54,7 +56,7 @@ const Bosses = {
         const scaling = CAMPAIGN_CONFIG.BOSS_SCALING;
         const humans = Math.max(1, game.numPlayers);
         const crewFactor = 1 + (humans - 1) * scaling.perExtraPlayer + game.numAIBots * scaling.perAlly;
-        const health = Math.round(def.health * difficulty.enemyHealthMultiplier * crewFactor);
+        const health = Math.round(def.health * difficulty.enemyHealthMultiplier * crewFactor * game.mode.crowdToughness(game));
 
         const boss = game.createTank({
             x,
@@ -113,6 +115,7 @@ const Bosses = {
             window.audioSystem.bossRoar();
             game.ring(boss.x, boss.y, 260, TANK_PALETTES[boss.palette].h, 500);
             if (game.mode.onBossPhase) game.mode.onBossPhase(game, boss, phase);
+            if ((boss.def.chorusPhases || []).includes(phase)) Bosses.attacks.chorus(game, boss);
         }
 
         const target = game.nearestHostile(boss, boss.x, boss.y);
@@ -153,8 +156,15 @@ const Bosses = {
     onBossBeat(boss, beatIndex) {
         const game = window.game;
         if (boss.resolving || boss.charging || boss.leaping) return;
-        if (game.hasStatus(boss, 'sleep') || game.hasStatus(boss, 'stun')) return;
-        if (beatIndex < boss.busyUntilBeat || game.dialog) return;
+        if (game.hasStatus(boss, 'sleep') || game.hasStatus(boss, 'stun') || game.dialog) return;
+
+        // On the hardest settings the air is never clear, whatever else it is doing
+        const pulse = boss.difficulty.bossPulseBeats;
+        if (pulse && beatIndex % pulse === 0) {
+            boss.pulseAngle = (boss.pulseAngle || 0) + 0.9;
+            Bosses.radialWithGap(game, boss, 6, boss.pulseAngle, 0.5, { speed: 2.4, size: 12 });
+        }
+        if (beatIndex < boss.busyUntilBeat) return;
 
         const phase = boss.def.phases[boss.phase];
         const target = game.nearestHostile(boss, boss.x, boss.y);
@@ -170,7 +180,7 @@ const Bosses = {
         boss.lastAttack = attack;
 
         const beats = Bosses.attacks[attack](game, boss, target);
-        const rest = phase.rest ?? boss.def.restBeats;
+        const rest = Math.max(1, (phase.rest ?? boss.def.restBeats) - (boss.difficulty.bossRestCut || 0));
         boss.busyUntilBeat = beatIndex + beats + rest;
     },
 
@@ -186,6 +196,7 @@ const Bosses = {
             speed: boss.bulletSpeed,
             size: 14,
             damage: 2 * boss.damage,
+            life: boss.difficulty.bulletLifeMs,
             owner: boss,
             kind: 'wrong',
             color: ENEMY_BULLET_COLOR,
@@ -245,8 +256,9 @@ const Bosses = {
     },
 
     summon(game, boss, type, count) {
-        for (let i = 0; i < count; i++) {
-            const angle = (i / count) * Math.PI * 2 + Math.random();
+        const total = Math.max(1, Math.min(8, Math.round(count * game.mode.enemyScale(game, boss.difficulty))));
+        for (let i = 0; i < total; i++) {
+            const angle = (i / total) * Math.PI * 2 + Math.random();
             const reach = boss.size / 2 + 50;
             const x = boss.x + Math.cos(angle) * reach;
             const y = boss.y + Math.sin(angle) * reach;
@@ -256,6 +268,21 @@ const Bosses = {
             game.tanks.push(minion);
             game.mode.enemyList.push(minion);
             game.ring(x, y, 40, '#ec8cf8', 300);
+        }
+    },
+
+    /**
+     * Bring in an exact number of enemies, in a ring around the boss
+     */
+    spawnAround(game, boss, type, count, reach) {
+        for (let i = 0; i < count; i++) {
+            const angle = (i / count) * Math.PI * 2;
+            const spot = game.mode.freeSpotNear(game, {
+                x: boss.x + Math.cos(angle) * reach,
+                y: boss.y + Math.sin(angle) * reach
+            });
+            game.mode.addEnemy(game, type, spot.x, spot.y, boss.difficulty).alerted = true;
+            game.ring(spot.x, spot.y, 40, '#ec8cf8', 300);
         }
     },
 
@@ -393,9 +420,42 @@ const Bosses = {
         },
 
         summon(game, boss) {
-            Bosses.summon(game, boss, 'quaver', 2);
+            Bosses.summon(game, boss, 'quaver', boss.def.summonCount || 2);
             window.audioSystem.bossRoar();
             return 2;
+        },
+
+        /**
+         * Sforzandi, which only a Lullaby can stop
+         */
+        summonWakers(game, boss) {
+            const alive = game.tanks.filter(tank => tank.isAlive && tank.enemyType === 'sforzando').length;
+            const crew = Math.floor(game.mode.extraTanks(game) / 3);
+            if (alive < 3 + crew) {
+                Bosses.spawnAround(game, boss, 'sforzando', 2 + crew, boss.size / 2 + 90);
+                window.audioSystem.bossRoar();
+            }
+            return 2;
+        },
+
+        /**
+         * The Wrong Chorus: the stage fills with Grace Notes, and the only real answer
+         * is The Whole Scale, which is why some harmony is thrown down first
+         */
+        chorus(game, boss) {
+            const beat = Bosses.beatMs(game);
+            game.showBanner('The Wrong Chorus', Prompts.melody('finale'), beat * 4);
+            window.audioSystem.bossRoar();
+            for (let i = 0; i < 2; i++) {
+                const spot = game.map.randomOpenPoint(3);
+                if (spot) game.powerupsManager.drop(spot.x, spot.y, 'HARMONY');
+            }
+            game.after(beat * 3, () => {
+                if (!boss.isAlive || boss.resolving) return;
+                const total = Math.min(30, 18 + game.mode.extraTanks(game) * 2);
+                Bosses.spawnAround(game, boss, 'grace', total, 340);
+            });
+            return 4;
         },
 
         /**
@@ -553,7 +613,7 @@ const Bosses = {
         },
 
         summonDampers(game, boss) {
-            Bosses.summon(game, boss, 'rest', 2);
+            Bosses.summon(game, boss, 'rest', boss.def.summonCount || 2);
             window.audioSystem.bossRoar();
             return 2;
         }

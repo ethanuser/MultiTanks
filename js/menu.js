@@ -33,6 +33,7 @@ class MenuSystem {
         this.selectedAIBots = 3;
         this.selectedBotSkill = 'NORMAL';
         this.selectedTheme = null;
+        this.selectedHarmony = true;
         this.midiConnected = false;
         this.menuElement = null;
         this.gameElement = null;
@@ -44,6 +45,7 @@ class MenuSystem {
         this.selectedCampaignDifficulty = 'MEDIUM';
         this.campaignPlayers = 1;
         this.campaignAllies = 1;
+        this.selectedAllySkill = 'NORMAL';
 
         this.worldMap = null;
         this.mapLevel = null;
@@ -143,6 +145,7 @@ class MenuSystem {
                             ${field('bot', 'AI bots', 'segBots')}
                             ${field('aim', 'Bot skill', 'segSkill')}
                             ${field('map', 'Stage', 'segTheme')}
+                            ${field('keys', 'Chords and melodies', 'segHarmony')}
                         </div>
                         <div class="column">
                             <div class="roster" id="roster"></div>
@@ -163,6 +166,7 @@ class MenuSystem {
                         <div class="column">
                             ${field('tank', 'Crew', 'segCrew')}
                             ${field('bot', 'AI allies', 'segAllies')}
+                            ${field('aim', 'Ally skill', 'segAllySkill')}
                             ${field('wave', 'Difficulty', 'segDifficulty')}
                             <div class="progress-row">
                                 <div class="notes" id="campaignNotes"></div>
@@ -222,11 +226,16 @@ class MenuSystem {
                                 <input type="range" id="sfxVolume" min="0" max="100" aria-label="Effects volume">
                             </div>
                             ${field('note', 'Soundtrack', 'segArenaMusic')}
+                            ${field('aim', 'Aim', 'segAim')}
                             <div class="option-row">
                                 ${iconButton('fullscreen', 'Fullscreen', 'data-fullscreen', 'sound-toggle')}
                             </div>
                         </section>
                         <section class="wide credits">
+                            <div class="option-row">
+                                <a class="sound-toggle" href="https://github.com/ethanNguyenUser" target="_blank" rel="noopener" aria-label="Made by Ethan Nguyen" data-tip="Made by Ethan Nguyen">${ic('person')}</a>
+                                <a class="sound-toggle" href="https://github.com/ethanNguyenUser/MultiTanks" target="_blank" rel="noopener" aria-label="MultiTanks on GitHub" data-tip="MultiTanks on GitHub">${ic('github')}</a>
+                            </div>
                             <p class="hint">Original score by this game. Smash Bros. soundtrack: "Battlefield", "Final Destination", "Main Menu" and "Fire Emblem Theme", from Super Smash Bros. Brawl and Ultimate. All rights belong to their owners. A non-commercial fan work.</p>
                         </section>
                     </div>
@@ -385,7 +394,7 @@ class MenuSystem {
     navigableButtons() {
         const root = this.overlay || document.querySelector('.screen.active');
         if (!root) return [];
-        return [...root.querySelectorAll('button:not(:disabled):not([aria-disabled="true"]), input[type="range"]')]
+        return [...root.querySelectorAll('button:not(:disabled):not([aria-disabled="true"]), a[href], input[type="range"]')]
             .filter(element => element.offsetParent !== null);
     }
 
@@ -655,6 +664,23 @@ class MenuSystem {
             this.renderSegments();
         });
 
+        this.segment('segHarmony', [
+            { value: true, html: ic('check'), tip: 'Chords and melodies on' },
+            { value: false, html: ic('cross'), tip: 'Tanks and shots only' }
+        ], this.selectedHarmony, (value) => {
+            this.selectedHarmony = value;
+            this.renderSegments();
+        });
+
+        this.segment('segAim', [
+            { value: 'mouse', html: ic('mouse'), tip: 'Aim with the mouse, click to fire' },
+            { value: 'keys', html: `${ic('left')}${ic('right')}`, tip: 'Aim with the Left and Right arrows' }
+        ], window.midiHandler.aimMode, (value) => {
+            window.midiHandler.setAimMode(value);
+            this.renderSegments();
+            document.getElementById('controlsPage').innerHTML = this.controlsMarkup();
+        });
+
         this.segment('segArenaMusic', [
             { value: 'chiptune', label: 'Chiptune', tip: 'The original score, with an exact beat' },
             { value: 'recordings', label: 'Smash Bros.', tip: 'No beat to follow, so no rhythm bonus in arenas' }
@@ -681,12 +707,29 @@ class MenuSystem {
             this.renderSegments();
         });
 
+        const allyTips = {
+            EASY: 'Easy: chords only, and not many of them',
+            NORMAL: 'Normal: chords only',
+            HARD: 'Hard: melodies too, and shots on the beat',
+            VIRTUOSO: 'Virtuoso: plays almost as well as you do'
+        };
+        this.segment('segAllySkill', Object.entries(BOT_SKILLS).map(([value, skill]) => ({
+            value, html: `<em>${skill.mark}</em>`, tip: allyTips[value]
+        })), this.selectedAllySkill, (value) => {
+            this.selectedAllySkill = value;
+            this.renderSegments();
+        });
+
         this.segment('segDifficulty', Object.entries(CAMPAIGN_CONFIG.DIFFICULTY).map(([value, entry]) => ({
             value, html: `<em>${entry.mark}</em>`, tip: `${entry.label}: ${entry.blurb}`
         })), this.selectedCampaignDifficulty, (value) => {
             this.selectedCampaignDifficulty = value;
             this.renderSegments();
         });
+
+        // Skill means nothing with no bots to have it
+        document.getElementById('segSkill').closest('.field').hidden = this.selectedAIBots === 0;
+        document.getElementById('segAllySkill').closest('.field').hidden = this.campaignAllies === 0;
 
         this.renderRoster();
         this.updateStartButton();
@@ -762,6 +805,12 @@ class MenuSystem {
         startBtn.disabled = !ready;
         startBtn.innerHTML = label;
         startBtn.setAttribute('aria-label', ready ? 'Start' : 'Not enough tanks');
+
+        const crewBtn = document.getElementById('campaignStartBtn');
+        const crewed = this.campaignPlayers + this.campaignAllies > 0;
+        crewBtn.disabled = !crewed;
+        crewBtn.innerHTML = crewed ? ic('play') : `${ic('tank')} 1+`;
+        crewBtn.setAttribute('aria-label', crewed ? 'Play' : 'Not enough tanks');
     }
 
     updateCampaignTag() {
@@ -906,9 +955,29 @@ class MenuSystem {
         // Add new canvas to body
         document.body.appendChild(newCanvas);
         this.gameElement = newCanvas;
-        newCanvas.addEventListener('pointerdown', () => {
-            if (window.game && window.game.dialog) window.game.dialog.advance();
+        newCanvas.classList.toggle('aiming', Prompts.usesMouse());
+        newCanvas.addEventListener('pointermove', (event) => {
+            if (!window.game) return;
+            const box = newCanvas.getBoundingClientRect();
+            window.game.mouse = {
+                x: (event.clientX - box.left) / box.width * newCanvas.width,
+                y: (event.clientY - box.top) / box.height * newCanvas.height
+            };
         });
+        newCanvas.addEventListener('pointerdown', (event) => {
+            if (!window.game) return;
+            if (window.game.dialog) {
+                window.game.dialog.advance();
+            } else if (Prompts.usesMouse()) {
+                newCanvas.setPointerCapture(event.pointerId);
+                window.midiHandler.pressMouse(true);
+            }
+        });
+        const release = () => {
+            if (window.midiHandler.heldKeys.has('Mouse')) window.midiHandler.pressMouse(false);
+        };
+        newCanvas.addEventListener('pointerup', release);
+        newCanvas.addEventListener('pointercancel', release);
         return newCanvas;
     }
 
@@ -924,26 +993,20 @@ class MenuSystem {
             aiTeamDistribution = { red: this.botRedCount, blue: bots - this.botRedCount };
         }
 
-        // Persist last used settings for hot-restart (R)
-        this.lastSettings = {
+        if (players + bots === 0) return;
+
+        await this.launch({
             gameMode: this.selectedGameMode,
             players,
             aiBots: bots,
-            botSkill: this.selectedBotSkill,
+            botSkill: campaign ? this.selectedAllySkill : this.selectedBotSkill,
             theme: this.selectedTheme,
+            harmonyOff: !campaign && !this.selectedHarmony,
             teamAssignments: { ...this.teamAssignments },
             aiTeamDistribution,
             campaignLevel: this.selectedCampaignLevel,
             campaignDifficulty: this.selectedCampaignDifficulty
-        };
-        await this.launch(this.lastSettings);
-    }
-
-    /**
-     * Restart with last used settings (used by R hotkey from menu)
-     */
-    async restartWithLastSettings() {
-        if (this.lastSettings) await this.launch(this.lastSettings);
+        });
     }
 
     async launch(settings) {
@@ -959,6 +1022,7 @@ class MenuSystem {
         const canvas = this.createCanvas();
         window.game = new MultiTanksGame();
         window.game.arenaTheme = settings.theme;
+        window.game.harmonyOff = !!settings.harmonyOff;
         this.currentScreen = 'game';
 
         await window.game.initialize(canvas, settings.players, settings.aiBots, settings.gameMode,
@@ -1018,7 +1082,7 @@ class MenuSystem {
                 <div class="pause-menu">
                     <button class="start-button" data-primary="1" id="pauseResume" aria-label="Resume" data-tip="Resume" data-key="Esc">${ic('play')}</button>
                     <div class="pause-row">
-                        ${iconButton('restart', campaign ? 'Restart stage' : 'Restart match', 'id="pauseRestart" data-key="R"', 'pause-item')}
+                        ${iconButton('restart', campaign ? 'Restart stage' : 'Restart match', 'id="pauseRestart"', 'pause-item')}
                         ${iconButton(this.fullscreenElement() ? 'shrink' : 'fullscreen', this.fullscreenLabel(), 'data-fullscreen', 'pause-item')}
                         ${iconButton(campaign ? 'map' : 'home', campaign ? 'Back to the map' : 'Main menu', 'id="pauseQuit"', 'pause-item')}
                     </div>
@@ -1027,7 +1091,7 @@ class MenuSystem {
                         <div class="option-row">${ic('speaker')}<input type="range" id="pauseSfx" min="0" max="100" aria-label="Effects volume"></div>
                     </div>
                 </div>
-                <div class="reference pause-reference">${this.controlsMarkup()}</div>
+                <div class="reference pause-reference">${this.controlsMarkup(name => game.abilityAvailable(game.players[0], name))}</div>
             </div>
         `;
         document.body.appendChild(overlay);
@@ -1152,7 +1216,7 @@ class MenuSystem {
 
         const tableRows = rows.map(row => `
             <tr>
-                <td><i class="swatch" style="background:${TANK_PALETTES[row.palette].m}"></i>${row.name}</td>
+                <td class="${row.player ? 'row-player' : ''}"><i class="swatch" style="background:${TANK_PALETTES[row.palette].m}"></i>${row.player ? `<b>${row.seat}</b> ` : ic('bot')}${row.name}</td>
                 <td>${row.kills}</td>
                 <td>${row.damage}</td>
                 <td>${row.accuracy}%</td>
@@ -1239,13 +1303,15 @@ class MenuSystem {
      * The whole reference, in terms of whatever the player has connected. Used by
      * the Controls page and the pause menu.
      */
-    controlsMarkup() {
+    controlsMarkup(isKnown = () => true) {
         const piano = Prompts.usingPiano();
+        const mouse = Prompts.usesMouse();
+        const harmony = !(window.game && window.game.harmonyOff);
         const cap = text => `<kbd class="cap">${text}</kbd>`;
-        const combo = (caps, icon, label) => `
-            <span class="combo" data-tip="${label}">${caps}${icon ? ic(icon) : ''}<small>${label}</small></span>`;
-        const seconds = ms => `${Math.round(ms / 1000)}s`;
-        const move = (entry, keys) => `
+        const combo = (caps, label) => `
+            <span class="combo" data-tip="${label}">${caps}<small>${label}</small></span>`;
+        const seconds = ms => `${Math.round(ms / 100) / 10}s`;
+        const move = (name, entry, keys) => (isKnown(name) ? `
             <div class="move">
                 ${picture(entry.icon)}
                 <div class="move-text"><b>${entry.label}</b><small>${entry.detail}</small></div>
@@ -1254,14 +1320,21 @@ class MenuSystem {
                     <span class="meter"><i style="width:${entry.cost}%"></i></span>
                     <small>${ic('clock')}${seconds(entry.cooldown)}</small>
                 </div>
-            </div>`;
+            </div>` : `
+            <div class="move locked" data-tip="Not learned yet">
+                ${picture('lock')}
+                <div class="move-text"><b>???</b></div>
+            </div>`);
         const chordKeys = chord => (piano
             ? chord.keys.map(key => cap(Prompts.harmonyKey(key))).join('+')
             : cap(chord.keyHint));
-        const chords = Object.values(HARMONY_CONFIG.CHORDS).map(chord => move(chord, chordKeys(chord))).join('');
-        const melodies = Object.values(HARMONY_CONFIG.MELODIES)
-            .map(melody => move(melody, melody.keys.map(key => cap(Prompts.harmonyKey(key))).join(''))).join('');
-        const pickups = Object.values(GAME_CONFIG.POWERUP_TYPES).map(type => `
+        const chords = Object.entries(HARMONY_CONFIG.CHORDS)
+            .map(([name, chord]) => move(name, chord, chordKeys(chord))).join('');
+        const melodies = Object.entries(HARMONY_CONFIG.MELODIES)
+            .map(([name, melody]) => move(name, melody, melody.keys.map(key => cap(Prompts.harmonyKey(key))).join(''))).join('');
+        const pickups = Object.entries(GAME_CONFIG.POWERUP_TYPES)
+            .filter(([type]) => harmony || type !== 'HARMONY')
+            .map(([, type]) => `
             <div class="pickup">${picture(type.icon)}<div class="move-text"><b>${type.name}</b><small>${type.detail}</small></div></div>
         `).join('');
 
@@ -1269,24 +1342,25 @@ class MenuSystem {
             <section class="wide">
                 ${piano ? this.pianoDiagram() : `
                     <div class="combos">
-                        ${combo(['W', 'A', 'S', 'D'].map(cap).join(''), null, 'Drive')}
-                        ${combo(cap(ic('left')) + cap(ic('right')), null, 'Aim')}
-                        ${combo(cap('Space'), null, 'Fire')}
-                        ${combo([1, 2, 3, 4, 5].map(cap).join(''), null, 'Harmony')}
+                        ${combo(['W', 'A', 'S', 'D'].map(cap).join(''), 'Drive')}
+                        ${combo(mouse ? cap(ic('mouse')) : cap(ic('left')) + cap(ic('right')), 'Aim')}
+                        ${combo((mouse ? cap(ic('mouse')) : '') + cap('Space'), 'Fire')}
+                        ${harmony ? combo([1, 2, 3, 4, 5].map(cap).join(''), 'Harmony') : ''}
                     </div>
                 `}
                 <div class="combos">
-                    ${combo(cap('Esc'), null, 'Pause')}
-                    ${combo(cap('R'), null, 'Restart')}
-                    ${combo(cap('M'), null, 'Mute')}
+                    ${combo(cap('Esc'), 'Pause')}
+                    ${combo(cap('M'), 'Mute')}
                 </div>
             </section>
-            <section class="wide"><div class="moves">${chords}</div></section>
-            <section class="wide"><div class="moves">${melodies}</div></section>
+            ${harmony ? `
+                <section class="wide"><div class="moves">${chords}</div></section>
+                <section class="wide"><div class="moves">${melodies}</div></section>
+            ` : ''}
             <section class="wide"><div class="pickups">${pickups}</div></section>
             <section class="wide rhythm">
                 <div class="beat-demo"><i></i><i></i><b></b><i></i><i></i></div>
-                <small>Fire as the marks meet. Shots on the beat hit harder and fill the gold bar.</small>
+                <small>${harmony ? 'Shots that land fill the gold bar, and even misses add a little. Fire as the marks meet to hit harder and fill it faster.' : 'Fire as the marks meet to hit harder.'}</small>
             </section>
         `;
     }
@@ -1480,27 +1554,3 @@ class MenuSystem {
 // GLOBAL MENU INSTANCE
 // =============================================================================
 window.menu = new MenuSystem();
-
-// Global R hotkey to restart current game/level or relaunch last settings
-(function setupGlobalRestartHotkey() {
-    let lastRestartAt = 0;
-    window.addEventListener('keydown', async (e) => {
-        if ((e.key === 'r' || e.key === 'R') && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
-            const now = Date.now();
-            if (now - lastRestartAt < 500) return; // debounce
-            lastRestartAt = now;
-
-            // Reset MIDI controls immediately
-            if (window.midiHandler) {
-                window.midiHandler.resetAllControls();
-            }
-
-            if (window.game) {
-                window.menu.restartCurrent();
-            } else if (window.menu && window.menu.restartWithLastSettings) {
-                // From menu: relaunch last settings
-                window.menu.restartWithLastSettings();
-            }
-        }
-    });
-})();

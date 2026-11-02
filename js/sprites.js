@@ -140,6 +140,22 @@ const Sprites = {
         });
     },
 
+    /**
+     * A hull's shape in shadow, so that it matches the tank at every angle
+     */
+    hullShadow(chassisKey, direction) {
+        return this.cached(`hullShadow:${chassisKey}:${direction}`, () => {
+            const hull = this.hull(chassisKey, 'white', direction, 0);
+            const canvas = makeCanvas(hull.width, hull.height);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(hull, 0, 0);
+            ctx.globalCompositeOperation = 'source-in';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+            ctx.fillRect(0, 0, hull.width, hull.height);
+            return canvas;
+        });
+    },
+
     paintHull(chassis, pal, frame, diagonal = false) {
         const { grid, length, width, tread } = chassis;
         const canvas = makeCanvas(grid, grid);
@@ -332,7 +348,11 @@ const Sprites = {
     icon(name) {
         return this.cached(`icon:${name}`, () => {
             const art = ICONS[name] || ICONS.star;
-            return this.outlined(this.fromRows(art.rows, art.colors));
+            // The outline needs a pixel of room on every side
+            const body = this.fromRows(art.rows, art.colors);
+            const canvas = makeCanvas(body.width + 2, body.height + 2);
+            canvas.getContext('2d').drawImage(body, 1, 1);
+            return this.outlined(canvas);
         });
     },
 
@@ -785,9 +805,12 @@ const UI_ICONS = {
     random: ['..#####..', '.##...##.', '.##...##.', '.....##..', '....##...', '....##...', '.........', '....##...', '....##...'],
     eye: ['.........', '..#####..', '.#.....#.', '#..###..#', '#..###..#', '#..###..#', '.#.....#.', '..#####..', '.........'],
     swap: ['...#.....', '..##.....', '.#######.', '..##.....', '...#.#...', '.....##..', '.#######.', '.....##..', '.....#...'],
+    mouse: ['...###...', '..#.#.#..', '.#..#..#.', '.#..#..#.', '.#######.', '.#.....#.', '.#.....#.', '..#...#..', '...###...'],
     wave: ['.........', '.##...##.', '#..#.#..#', '#..#.#..#', '...###...', '#..#.#..#', '#..#.#..#', '.##...##.', '.........'],
     left: ['...#.....', '..##.....', '.#######.', '#########', '.#######.', '..##.....', '...#.....', '.........', '.........'],
-    right: ['.....#...', '.....##..', '.#######.', '#########', '.#######.', '.....##..', '.....#...', '.........', '.........']
+    right: ['.....#...', '.....##..', '.#######.', '#########', '.#######.', '.....##..', '.....#...', '.........', '.........'],
+    person: ['...###...', '..#####..', '..#####..', '..#####..', '...###...', '.........', '.#######.', '#########', '#########'],
+    github: ['.#.....#.', '.##...##.', '.#######.', '#########', '#.##.##.#', '#########', '.#######.', '#.##.##..', '.###.##..']
 };
 
 ICONS.tank = { colors: { '#': '#f2e8d2' }, rows: UI_ICONS.tank };

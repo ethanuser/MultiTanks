@@ -39,8 +39,8 @@ Each player has one octave, from A to G#. Player 1 starts at the lowest A on the
 | Action | Piano | Keyboard |
 | --- | --- | --- |
 | Drive | A# up, A left, B down, C right | W A S D |
-| Aim | C# left, D# right | Left / Right arrows |
-| Shoot | D | Space or Enter |
+| Aim | C# left, D# right | The mouse, or the Left / Right arrows (Options) |
+| Shoot | D | Click, Space or Enter |
 | Harmony keys 1 to 5 | E, F, F#, G, G# | 1 to 5 |
 
 The game talks in terms of whichever you are using: dialogue, hints and the Controls page all name piano keys when a piano is connected, and computer keys when one is not.
@@ -49,12 +49,12 @@ The game talks in terms of whichever you are using: dialogue, hints and the Cont
 Fire as the marks meet in the middle of the beat bar. On-beat shots hit harder, fill the harmony meter faster and build your groove. Every drum pattern in the score marks all four beats, so the pulse can always be heard.
 
 ### Chords
-Strike two harmony keys together. Chords spend harmony, the gold bar, which fills as you land hits. Each chord has its own job and its own cooldown, shown along the bottom of the screen.
+Strike two harmony keys together. Chords and melodies spend harmony, the gold bar. Firing adds a tiny amount, a shot stopped by armor or a shield adds more, and a shot that lands adds the most, especially on the beat, so there is little to gain by running away. Each has its own job and its own cooldown, shown along the bottom of the screen. Free For All and Team Battle can be played with them switched off.
 
 | Chord | Piano | Keyboard | Harmony | Cooldown | Effect |
 | --- | --- | --- | --- | --- | --- |
-| Pianissimo | E + G | Q, or 1 + 4 | 30 | 9s | Stops 5 hits of any size at first, fading by one hit every 1.6 seconds |
-| Glissando | F + G# | Left Shift, or 2 + 5 | 15 | 0.6s | Slides through shots and gaps, and hurts whatever it hits |
+| Pianissimo | E + G | Q, or 1 + 4 | 30 | 11s | Stops 5 hits of any size at first, fading by one hit every 2 seconds |
+| Glissando | F + G# | Left Shift, or 2 + 5 | 8 | 1.2s | Slides through shots and gaps, and hurts whatever it hits |
 | Fortissimo | E + G# | E, or 1 + 5 | 40 | 6s | Clears nearby shots and throws enemies back |
 | Tenuto | F + G | F, or 2 + 4 | 50 | 14s | Mends 2 health on each of 3 beats, until you are hit |
 
@@ -63,10 +63,10 @@ Play harmony keys one after another. In the campaign these are learned along the
 
 | Melody | Keys | Harmony | Cooldown | Effect |
 | --- | --- | --- | --- | --- |
-| Rising Call | 1 3 5 | 45 | 6s | Summons two little allies |
-| Lullaby | 5 4 3 2 | 50 | 7s | Puts enemies to sleep, even across the room |
-| Echo | 1 5 1 5 | 45 | 6s | Every shot rings three times, and bounces |
-| The Whole Scale | 1 2 3 4 5 | 80 | 10s | Clears every shot and hits every enemy |
+| Rising Call | 1 3 5 | 45 | 10s | Two weak decoys that draw enemy fire and fade away |
+| Lullaby | 5 4 3 2 | 50 | 9s | Puts nearby enemies to sleep |
+| Echo | 1 5 1 5 | 50 | 12s | Each shot rings again, weaker, and bounces |
+| The Whole Scale | 1 2 3 4 5 | 80 | 14s | Clears every shot and hits every enemy for 10 |
 
 ### Pickups
 | Pickup | Effect |
@@ -81,7 +81,6 @@ Play harmony keys one after another. In the campaign these are learned along the
 
 ### Hotkeys
 - Esc or P: Pause. The pause menu has restart, fullscreen, sound, the controls, and the way back to the map or menu
-- R: Restart the current game or stage, or relaunch the last settings from the menu
 - M: Mute
 
 ## Game Modes
@@ -91,13 +90,18 @@ Pip's crew of tiny tanks live inside the Old Grand. One night all 88 notes in th
 
 Every note walks the same road through a piano, so the journey does too: key, hammer, string, damper, bridge, soundboard. Each stage picks up where the last left off, each boss is a part of the piano that stopped doing its job, and the world map is the piano itself, seen from above, lighting up as it is mended. The wrong notes you fight are the stolen ones, and setting one right sends it home. The hidden stages hold the last of the 88, and a story of their own.
 
-Each world has two main stages, a hidden stage with a permanent reward, and a boss. Crew size, AI allies and difficulty are all adjustable, and progress is saved in the browser. Bosses scale to the size of the crew.
+Each world has two main stages, a hidden stage with a permanent reward, and a boss. Crew size, AI allies, their skill and difficulty are all adjustable, and progress is saved in the browser. Bosses scale to the size of the crew.
 
 | Difficulty | What changes |
 | --- | --- |
-| Piano | Slow enemies, slow fire, softer hits, and the tempo as written |
-| Mezzo | The whole game runs 10% faster, music and crew included |
-| Forte | The whole game runs 22% faster, and every enemy fires in patterns, for far more shots in the air |
+| p, Piano | Slow enemies, slow fire, softer hits, the tempo as written, and 3 spare tanks |
+| mf, Mezzo | The whole game runs 10% faster, music and crew included. More and tougher enemies, 2 spare tanks |
+| f, Forte | 22% faster, every enemy fires in patterns, and bosses never stop firing. 1 spare tank |
+| ff, Fortissimo | 30% faster and a true bullet hell, with 1 spare tank. Your tank is much harder to hit, to make it possible. Each stage is tuned so that two Virtuoso allies win about half the time. A lone tank faces less, and a bigger crew faces a larger swarm |
+
+The last two bosses need the melodies. The Great Mute calls Sforzandi, which nothing can hurt until a Lullaby puts them to sleep for 12 seconds, when one shot finishes them, and it is badly hurt by sleep itself. The Eighty-Ninth Key floods the stage with the Wrong Chorus, whose Grace Notes fall to exactly one Whole Scale.
+
+Enemies get tougher and more numerous, and bosses tougher, with every extra tank in the crew. Small enemies fire single shots on every difficulty, and a swarm takes turns: the nearest few attack while the rest wait, and they get shoved aside if you drive into them. If you run out of spare tanks, your allies fight on without you.
 
 ### Free For All
 Last tank rolling wins.

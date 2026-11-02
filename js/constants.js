@@ -61,14 +61,16 @@ const GAME_CONFIG = {
 
     // Harmony meter (spent on chords and melodies)
     METER_MAX: 100,
-    METER_START: 35,
-    METER_PASSIVE_PER_SEC: 2,
+    METER_START: 25,
+    METER_ON_KILL: 3,          // On top of what the hits themselves earn
+    METER_ON_SHOT: 0.3,        // Just for firing, hit or miss, doubled on the beat
+    METER_ON_BLOCK: 0.5,       // Share of a hit's harmony for a shot that lands but is stopped
 
     // Rhythm
     BEAT_WINDOW_MS: 120,       // Early or late by this much still counts as on the beat
     BEAT_DAMAGE_BONUS: 1,      // Extra damage for an on-beat shot
     GROOVE_MAX: 4,             // Highest groove streak
-    GROOVE_METER_BONUS: 2,     // Extra meter per groove level on an on-beat shot
+    GROOVE_METER_BONUS: 0.5,     // Extra meter per groove level, if an on-beat shot lands
 
     // Powerup settings
     POWERUP_DURATION: 12000,
@@ -78,7 +80,7 @@ const GAME_CONFIG = {
     POWERUP_LIFETIME: 18000,
     POWERUP_SIZE: 24,
     POWERUP_HEALTH_BOOST: 8,
-    POWERUP_METER_BOOST: 35,
+    POWERUP_METER_BOOST: 25,
     POWERUP_STAR_MS: 7000,
     POWERUP_SPEED_BONUS: 0.3,   // Per stack
     POWERUP_SPREAD_ANGLE: 0.2,  // radians
@@ -133,11 +135,13 @@ const GAME_CONFIG = {
 // =============================================================================
 // AI BOT SKILL
 // =============================================================================
+// Rhythm is how often a bot holds its fire for the beat, and melodies
+// how readily it plays them. Only the top two levels do either.
 const BOT_SKILLS = {
-    EASY: { label: 'Easy', mark: 'p', reactionMs: 520, aimError: 0.22, lead: 0.45, dodge: 0.2, abilityChance: 0.25, turretFactor: 0.7, speedFactor: 0.82 },
-    NORMAL: { label: 'Normal', mark: 'mf', reactionMs: 300, aimError: 0.1, lead: 0.8, dodge: 0.5, abilityChance: 0.55, turretFactor: 1, speedFactor: 0.95 },
-    HARD: { label: 'Hard', mark: 'f', reactionMs: 170, aimError: 0.05, lead: 1, dodge: 0.8, abilityChance: 0.8, turretFactor: 1.25, speedFactor: 1 },
-    VIRTUOSO: { label: 'Virtuoso', mark: 'ff', reactionMs: 90, aimError: 0.02, lead: 1, dodge: 0.96, abilityChance: 1, turretFactor: 1.5, speedFactor: 1.05 }
+    EASY: { label: 'Easy', mark: 'p', reactionMs: 520, aimError: 0.22, lead: 0.45, dodge: 0.2, abilityChance: 0.25, turretFactor: 0.7, speedFactor: 0.82, rhythm: 0, melodies: 0 },
+    NORMAL: { label: 'Normal', mark: 'mf', reactionMs: 300, aimError: 0.1, lead: 0.8, dodge: 0.5, abilityChance: 0.55, turretFactor: 1, speedFactor: 0.95, rhythm: 0, melodies: 0 },
+    HARD: { label: 'Hard', mark: 'f', reactionMs: 170, aimError: 0.05, lead: 1, dodge: 0.8, abilityChance: 0.8, turretFactor: 1.25, speedFactor: 1, rhythm: 0.4, melodies: 0.03 },
+    VIRTUOSO: { label: 'Virtuoso', mark: 'ff', reactionMs: 60, aimError: 0.01, lead: 1, dodge: 0.98, abilityChance: 1, turretFactor: 1.8, speedFactor: 1.15, rhythm: 0.9, melodies: 0.15 }
 };
 
 const AI_CONFIG = {
@@ -148,6 +152,7 @@ const AI_CONFIG = {
     STANDOFF_RANGE: 260,         // Bots try to hold about this far from a target
     TOO_CLOSE_RANGE: 130,        // Bots back away from a target inside this range
     RETREAT_HEALTH: 0.34,        // Fraction of health at which a bot disengages
+    RETREAT_MS: 3000,            // How long it stays away, before it has to fight on
     PICKUP_RANGE: 380,           // How far a bot goes out of its way for a pickup
     DANGER_LOOKAHEAD_TICKS: 34,  // How far ahead a bot predicts bullets
     DANGER_RADIUS: 46,           // A predicted pass this close counts as a threat
@@ -216,24 +221,24 @@ const HARMONY_CONFIG = {
     ABILITY_COOLDOWN_MS: 400, // Between any two chords. Each also has its own cooldown
 
     CHORDS: {
-        shield: { keys: [1, 4], cost: 30, cooldown: 9000, label: 'Pianissimo', keyHint: 'Q', keyCap: 'Q', icon: 'shield', detail: 'Stops 5 hits, fewer as it fades' },
-        dash: { keys: [2, 5], cost: 15, cooldown: 600, label: 'Glissando', keyHint: 'Shift', keyCap: '^', icon: 'wing', detail: 'Slides through shots, gaps and enemies' },
+        shield: { keys: [1, 4], cost: 30, cooldown: 11000, label: 'Pianissimo', keyHint: 'Q', keyCap: 'Q', icon: 'shield', detail: 'Stops 5 hits, fewer as it fades' },
+        dash: { keys: [2, 5], cost: 8, cooldown: 1200, label: 'Glissando', keyHint: 'Shift', keyCap: '^', icon: 'wing', detail: 'Slides through shots, gaps and enemies' },
         blast: { keys: [1, 5], cost: 40, cooldown: 6000, label: 'Fortissimo', keyHint: 'E', keyCap: 'E', icon: 'burst', detail: 'Clears shots, throws enemies back' },
         heal: { keys: [2, 4], cost: 50, cooldown: 14000, label: 'Tenuto', keyHint: 'F', keyCap: 'F', icon: 'heart', detail: 'Mends over 3 beats, until you are hit' }
     },
 
     MELODIES: {
-        rally: { keys: [1, 3, 5], cost: 45, cooldown: 6000, label: 'Rising Call', icon: 'notes', effect: 'Summon two little allies', detail: 'Summons two little allies' },
-        lullaby: { keys: [5, 4, 3, 2], cost: 50, cooldown: 7000, label: 'Lullaby', icon: 'moon', effect: 'Put enemies to sleep', detail: 'Puts enemies to sleep, even across the room' },
-        echo: { keys: [1, 5, 1, 5], cost: 45, cooldown: 6000, label: 'Echo', icon: 'spring', effect: 'Every shot rings three times', detail: 'Every shot rings three times, and bounces' },
-        finale: { keys: [1, 2, 3, 4, 5], cost: 80, cooldown: 10000, label: 'The Whole Scale', icon: 'clef', effect: 'A wave across the whole stage', detail: 'Clears every shot and hits every enemy' }
+        rally: { keys: [1, 3, 5], cost: 45, cooldown: 24000, label: 'Rising Call', icon: 'notes', effect: 'Summon two decoys', detail: 'Two weak decoys that draw enemy fire' },
+        lullaby: { keys: [5, 4, 3, 2], cost: 50, cooldown: 9000, label: 'Lullaby', icon: 'moon', effect: 'Put nearby enemies to sleep', detail: 'Puts nearby enemies to sleep' },
+        echo: { keys: [1, 5, 1, 5], cost: 50, cooldown: 12000, label: 'Echo', icon: 'spring', effect: 'Shots ring twice', detail: 'Each shot rings again, weaker, and bounces' },
+        finale: { keys: [1, 2, 3, 4, 5], cost: 80, cooldown: 14000, label: 'The Whole Scale', icon: 'clef', effect: 'A wave across the whole stage', detail: 'Clears every shot, hits every enemy for 10' }
     },
 
-    SHIELD_MS: 8000,         // Nearly the whole cooldown, so it can almost always be up
+    SHIELD_MS: 10000,        // Nearly the whole cooldown, so it can almost always be up
     SHIELD_HITS: 5,          // Fades one hit at a time, evenly, over its whole length
     DASH_MS: 240,
     DASH_SPEED: 11,
-    DASH_DAMAGE: 3,          // To anything it slides through
+    DASH_DAMAGE: 2,          // To anything it slides through
     BLAST_RADIUS: 190,
     BLAST_DAMAGE: 6,
     BLAST_KNOCKBACK: 9,
@@ -241,16 +246,19 @@ const HARMONY_CONFIG = {
     HEAL_PER_BEAT: 2,
     HEAL_ALLY_PER_BEAT: 1,
     HEAL_RADIUS: 170,
-    RALLY_MS: 20000,
     RALLY_COUNT: 2,
-    RALLY_HEALTH: 16,
-    LULLABY_MS: 5000,
-    LULLABY_BOSS_MS: 2200,
-    LULLABY_RADIUS: 520,
-    ECHO_MS: 12000,
+    RALLY_HEALTH: 36,
+    RALLY_FADE_MS: 600,      // Decoys lose a point of health this often, whatever happens
+    RALLY_DAMAGE: 1,
+    RALLY_FIRE_MS: 1400,
+    RALLY_TAUNT: 0.35,       // Enemies treat a decoy as this much closer than it is
+    LULLABY_MS: 4000,
+    LULLABY_BOSS_MS: 1600,
+    LULLABY_RADIUS: 340,
+    ECHO_MS: 8000,
     ECHO_DELAY_MS: 170,
-    ECHO_REPEATS: 2,
-    FINALE_DAMAGE: 16
+    ECHO_DAMAGE: 0.5,        // The repeat is a quieter copy of the shot
+    FINALE_DAMAGE: 10
 };
 
 // =============================================================================
@@ -457,8 +465,6 @@ const CAMPAIGN_CONFIG = {
         followDistance: 240 // Allies regroup on the players past this distance
     },
 
-    LIVES_PER_LEVEL: 2, // Spare tanks per crew member before the level is lost
-
     // Camera settings
     CAMERA: {
         followSpeed: 0.12 // How quickly the camera catches up
@@ -469,27 +475,59 @@ const CAMPAIGN_CONFIG = {
     DIFFICULTY: {
         EASY: {
             label: 'Piano', mark: 'p', blurb: 'Gentle. Slow enemies, slow fire, soft hits, and plenty of warning.',
-            pace: 1, bulletDensity: 0.8,
+            pace: 1, bulletDensity: 0.8, spares: 3, enemyCount: 1, swarmSlots: 2, bulletCap: 50, bulletLifeMs: 4000,
             enemySpeedMultiplier: 0.74, enemyFireRateMultiplier: 0.6, enemyBulletSpeedMultiplier: 0.78,
-            enemyHealthMultiplier: 0.75, enemyDamageMultiplier: 0.75, attackTokens: 1, aimError: 0.18
+            enemyHealthMultiplier: 0.8, enemyDamageMultiplier: 0.75, attackTokens: 1, aimError: 0.18
         },
         MEDIUM: {
             label: 'Mezzo', mark: 'mf', blurb: 'The intended way to hear it. A brisker tempo for everyone.',
-            pace: 1.1, bulletDensity: 1,
+            pace: 1.1, bulletDensity: 1, threatCap: 1, spares: 2, enemyCount: 1.15, swarmSlots: 3, bulletCap: 90, bulletLifeMs: 4500,
             enemySpeedMultiplier: 1, enemyFireRateMultiplier: 1, enemyBulletSpeedMultiplier: 1,
-            enemyHealthMultiplier: 1, enemyDamageMultiplier: 1, attackTokens: 3, aimError: 0.07
+            enemyHealthMultiplier: 1.25, enemyDamageMultiplier: 1, attackTokens: 2, aimError: 0.07
         },
         HARD: {
             label: 'Forte', mark: 'f', blurb: 'The fastest tempo, and the air full of shots.',
-            pace: 1.22, bulletDensity: 1.7, patterns: true,
-            enemySpeedMultiplier: 1.08, enemyFireRateMultiplier: 1.25, enemyBulletSpeedMultiplier: 1,
-            enemyHealthMultiplier: 1.25, enemyDamageMultiplier: 1.1, attackTokens: 7, aimError: 0.03
+            pace: 1.22, bulletDensity: 1.6, threatCap: 1, patterns: true, spares: 1, enemyCount: 1.3, crewHitbox: 0.75,
+            swarmSlots: 4, bulletCap: 200, bulletLifeMs: 5500, bossRestCut: 1, bossPulseBeats: 2,
+            enemySpeedMultiplier: 1.1, enemyFireRateMultiplier: 1.2, enemyBulletSpeedMultiplier: 1,
+            enemyHealthMultiplier: 1.5, enemyDamageMultiplier: 1.25, attackTokens: 4, aimError: 0.03
+        },
+        FORTISSIMO: {
+            label: 'Fortissimo', mark: 'ff', blurb: 'A true bullet hell.',
+            pace: 1.3, bulletDensity: 2.2, patterns: true, patternScale: 1.3, doubleTime: true, threatCap: Infinity,
+            spares: 1, enemyCount: 1.5, crewHitbox: 0.5, swarmSlots: 6, bulletCap: 350, bulletLifeMs: 6500,
+            bossRestCut: 1, bossPulseBeats: 2,
+            enemySpeedMultiplier: 1.15, enemyFireRateMultiplier: 1.35, enemyBulletSpeedMultiplier: 1,
+            enemyHealthMultiplier: 1.8, enemyDamageMultiplier: 1.25, attackTokens: 7, aimError: 0.02
         }
+    },
+
+    // How much tougher and more numerous enemies get for each tank past the first
+    ENEMY_SCALING: {
+        healthPerTank: 0.08,
+        countPerTank: 0.1,
+        crowdFrom: 2,          // Past this many extra tanks, a big crew stops being a sweep
+        crowdHealth: 0.13,    // Per tank past that, for enemies and bosses alike
+        crowdCount: 0.18,
+        crowdPatterns: 0.06,   // Pattern enemies grow more slowly, as bullets add up fast
+        smallCrew: [0.8, 0.9] // Threat for a lone tank, and for two. The tuning is for three
+    },
+
+    // How dangerous each stage is on Fortissimo. This sets how many enemies there are,
+    // and eases or sharpens their damage and health by its square root. A Quaver stage
+    // and a Damper stage are very different fights, so each is tuned on its own to give
+    // two Virtuoso allies about a 50% chance of winning. Mezzo and Forte use it
+    // too, by half as much, and only to ease a stage, never to sharpen one.
+    STAGE_THREAT: {
+        '1-1': 3.23, '1-2': 0.95, '1-S': 2.25, '1-B': 1.01,
+        '2-1': 0.87, '2-2': 0.51, '2-S': 1.7, '2-B': 0.93,
+        '3-1': 0.53, '3-2': 0.77, '3-S': 0.73, '3-B': 0.87,
+        '4-1': 1.01, '4-S': 1.05, '4-2': 0.73, '4-B': 0.35
     },
 
     // How much a boss's health grows with the size of the crew
     BOSS_SCALING: {
         perExtraPlayer: 0.6,
-        perAlly: 0.5
+        perAlly: 0.4
     }
 };

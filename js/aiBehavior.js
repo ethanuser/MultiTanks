@@ -57,7 +57,7 @@ class AIBehavior {
         }
 
         const threat = this.findIncomingBullet(tank);
-        this.useChords(tank, ai, threat);
+        if (!tank.isBuddy) this.useChords(tank, ai, threat);
 
         const steer = this.steering(tank, ai, threat);
         this.applySteering(tank, ai, steer);
@@ -72,11 +72,11 @@ class AIBehavior {
         ai.target = this.chooseTarget(tank, ai);
 
         const healthFraction = tank.health / tank.maxHealth;
-        const pickup = this.bestPickup(tank, healthFraction);
+        const pickup = tank.isBuddy ? null : this.bestPickup(tank, healthFraction);
 
         if (pickup && (healthFraction < 0.6 || !ai.target || this.distanceTo(tank, ai.target) > AI_CONFIG.ENGAGE_RANGE * 0.6)) {
             ai.goal = { type: 'pickup', x: pickup.x, y: pickup.y };
-        } else if (healthFraction < AI_CONFIG.RETREAT_HEALTH && ai.target && this.outnumbered(tank, ai.target)) {
+        } else if (this.shouldRetreat(tank, ai, healthFraction)) {
             ai.goal = { type: 'retreat', ...this.findCover(tank, ai.target) };
         } else if (tank.isAIAlly && this.needsToRegroup(tank, ai)) {
             ai.goal = { type: 'regroup', ...this.followSpot(tank) };
@@ -85,8 +85,9 @@ class AIBehavior {
             const distance = this.distanceTo(tank, ai.target);
             if (sees && distance < AI_CONFIG.ENGAGE_RANGE) {
                 ai.goal = { type: 'fight' };
-            } else if (tank.isAIAlly && distance > AI_CONFIG.HUNT_LEASH) {
-                // Allies stay with the crew rather than wandering off across the map
+            } else if (tank.isAIAlly && (distance > AI_CONFIG.HUNT_LEASH || !game.players.some(player => player.isAlive))) {
+                // Allies stay with the crew rather than wandering off across the map,
+                // and with nobody left to follow they get on with the objective
                 ai.goal = { type: 'regroup', ...this.followSpot(tank) };
             } else {
                 ai.goal = { type: 'hunt', x: ai.target.x, y: ai.target.y };
@@ -123,6 +124,7 @@ class AIBehavior {
             if (!game.map.lineClear(tank.x, tank.y, other.x, other.y)) score += 260;
             if (other === held) score *= 0.75;
             if (tank.lastAttacker === other) score *= 0.7;
+            if (other.isBuddy) score *= HARMONY_CONFIG.RALLY_TAUNT;
             if (score < bestScore) {
                 bestScore = score;
                 best = other;
@@ -155,6 +157,21 @@ class AIBehavior {
             }
         });
         return best;
+    }
+
+    /**
+     * Back off when hurt, but only for so long. A tank that never heals would
+     * otherwise spend the rest of the stage hiding.
+     */
+    shouldRetreat(tank, ai, healthFraction) {
+        const { clock } = this.game;
+        if (clock < (ai.retreatUntil || 0)) return !!ai.target;
+        if (clock < (ai.nextRetreat || 0)) return false;
+        if (healthFraction >= AI_CONFIG.RETREAT_HEALTH || !ai.target || !this.outnumbered(tank, ai.target)
+            || this.distanceTo(tank, ai.target) >= AI_CONFIG.ENGAGE_RANGE) return false;
+        ai.retreatUntil = clock + AI_CONFIG.RETREAT_MS;
+        ai.nextRetreat = ai.retreatUntil + AI_CONFIG.RETREAT_MS * 3;
+        return true;
     }
 
     /**
@@ -223,7 +240,7 @@ class AIBehavior {
     followSpot(tank) {
         const leader = this.leaderOf(tank);
         const game = this.game;
-        if (game.numPlayers === 0 && !tank.leader) return { ...leader, exact: true };
+        if (!tank.leader && !game.players.some(player => player.isAlive)) return { ...leader, exact: true };
 
         const crew = game.tanks.filter(other => other.isAlive && other.isAIAlly);
         const place = Math.max(0, crew.indexOf(tank));
@@ -293,6 +310,8 @@ class AIBehavior {
                     y += (route.y - tank.y) / distance;
                     // Something in the way that can be shot out of it
                     if (route.crate) ai.breakCrate = route;
+                    // The only way there is across a hazard, so that is not a mistake
+                    ai.crossing = !!route.hazard;
                 }
             }
         }
@@ -336,21 +355,42 @@ class AIBehavior {
             }
         });
 
-        // Look before driving onto something that hurts
+        return this.avoidHazards(tank, ai, x, y);
+    }
+
+    /**
+     * The last word on where to drive, whatever is pulling the tank: find the heading
+     * nearest to what it wants that does not end up on anything that hurts. Dodging,
+     * strafing and being crowded are never worth driving onto spikes for.
+     */
+    avoidHazards(tank, ai, x, y) {
+        const { map } = this.game;
         const length = Math.hypot(x, y);
-        if (length > 0.01) {
-            const aheadX = tank.x + x / length * 34;
-            const aheadY = tank.y + y / length * 34;
-            const ahead = game.map.tileAt(aheadX, aheadY);
-            const here = game.map.tileAt(tank.x, tank.y);
-            if (ahead === TILES.STRING && here !== TILES.STRING && game.stringsActive()) {
-                return { x: 0, y: 0 }; // Wait for the string to stop ringing
-            }
-            if (ahead === TILES.SPIKES && here !== TILES.SPIKES) {
-                [x, y] = [-y * ai.strafe, x * ai.strafe]; // Turn aside instead
+        if (length < 0.01) return { x, y };
+
+        // Strings count from just before they ring, to be clear of them in time
+        const ringing = this.game.stringsActive() || this.game.beat.position % 2 > 0.6;
+        if (ai.crossing) {
+            ai.crossing = false;
+            const ahead = map.tileAt(tank.x + x / length * 40, tank.y + y / length * 40);
+            const here = map.tileAt(tank.x, tank.y);
+            if (ahead === TILES.STRING && here !== TILES.STRING && ringing) return { x: 0, y: 0 };
+            return { x, y };
+        }
+
+        // Already standing on one, the only thing to do is keep moving
+        if (map.hazardAt(tank.x, tank.y, ringing)) return { x, y };
+
+        const angle = Math.atan2(y, x);
+        for (const turn of [0, 0.5, -0.5, 1, -1, 1.6, -1.6, 2.4, -2.4]) {
+            const heading = angle + turn * ai.strafe;
+            const cos = Math.cos(heading);
+            const sin = Math.sin(heading);
+            if (![20, 44, 68].some(reach => map.hazardAt(tank.x + cos * reach, tank.y + sin * reach, ringing))) {
+                return { x: cos * length, y: sin * length };
             }
         }
-        return { x, y };
+        return { x: 0, y: 0 };
     }
 
     /**
@@ -555,7 +595,7 @@ class AIBehavior {
             ai.breakCrate = null;
             const angle = Math.atan2(crate.y - tank.y, crate.x - tank.x);
             this.turnTurret(tank, angle, skill);
-            if (Math.abs(normalizeAngle(angle - tank.turretAngle)) < 0.25) this.tryShoot(tank);
+            if (Math.abs(normalizeAngle(angle - tank.turretAngle)) < 0.25) this.tryShoot(tank, ai);
             return;
         }
         ai.breakCrate = null;
@@ -579,7 +619,7 @@ class AIBehavior {
 
         const reacted = game.clock - ai.sightedAt >= skill.reactionMs;
         const aimed = Math.abs(normalizeAngle(wanted - tank.turretAngle)) < 0.14;
-        if (reacted && aimed) this.tryShoot(tank);
+        if (reacted && aimed) this.tryShoot(tank, ai);
     }
 
     turnTurret(tank, wanted, skill) {
@@ -588,8 +628,23 @@ class AIBehavior {
         tank.turretAngle += Math.max(-rate, Math.min(rate, difference));
     }
 
-    tryShoot(tank) {
-        if (this.game.clock >= tank.nextShotAt) this.game.fireShot(tank);
+    /**
+     * Fire when the gun is ready. How often a bot holds on for the beat depends on
+     * its skill, and each shot is settled once, so it never waits long.
+     */
+    tryShoot(tank, ai) {
+        const game = this.game;
+        if (game.clock < tank.nextShotAt) return;
+        if (tank.isBuddy || game.beatless || !ai.skill.rhythm) {
+            game.fireShot(tank);
+            return;
+        }
+        if (ai.holdForBeat === undefined) ai.holdForBeat = Math.random() < ai.skill.rhythm;
+        const onBeat = game.isOnBeat();
+        if (ai.holdForBeat && !onBeat) return;
+        ai.holdForBeat = undefined;
+        game.scoreRhythm(tank, onBeat);
+        game.fireShot(tank, onBeat);
     }
 
     /**
@@ -599,6 +654,41 @@ class AIBehavior {
         const game = this.game;
         if (game.clock < tank.abilityReadyAt || Math.random() > ai.skill.abilityChance * 0.1) return;
         const healthFraction = tank.health / tank.maxHealth;
+
+        // Some enemies leave no choice about what to play
+        const can = name => ai.skill.melodies > 0 && game.abilityAvailable(tank, name) && Abilities.ready(game, tank, name);
+        const foes = game.tanks.filter(other => other.isAlive && other.enemyType);
+        if (can('lullaby') && foes.some(other => other.def.wakeful && !game.hasStatus(other, 'sleep')
+            && distanceBetween(tank, other) < HARMONY_CONFIG.LULLABY_RADIUS * 0.8)) {
+            Abilities.cast(game, tank, 'lullaby');
+            return;
+        }
+        if (can('finale') && foes.filter(other => other.enemyType === 'grace').length >= 8) {
+            Abilities.cast(game, tank, 'finale');
+            return;
+        }
+
+        // Otherwise, now and then, whichever melody suits the fight
+        const inTheMood = Math.random() < ai.skill.melodies;
+        const hostile = game.tanks.filter(other => other.isAlive && game.areHostile(tank, other) && !other.isBuddy);
+        const within = reach => hostile.filter(other => distanceBetween(tank, other) < reach).length;
+        if (inTheMood && can('finale') && within(AI_CONFIG.ENGAGE_RANGE * 1.5) >= 5) {
+            Abilities.cast(game, tank, 'finale');
+            return;
+        }
+        if (inTheMood && can('lullaby') && within(HARMONY_CONFIG.LULLABY_RADIUS * 0.8) >= 3) {
+            Abilities.cast(game, tank, 'lullaby');
+            return;
+        }
+        if (inTheMood && can('rally') && within(AI_CONFIG.ENGAGE_RANGE) >= 2
+            && !game.tanks.some(other => other.isAlive && other.leader === tank)) {
+            Abilities.cast(game, tank, 'rally');
+            return;
+        }
+        if (inTheMood && can('echo') && ai.target && ai.goal && ai.goal.type === 'fight' && !game.hasStatus(tank, 'echo')) {
+            Abilities.cast(game, tank, 'echo');
+            return;
+        }
 
         if (healthFraction < 0.5 && Abilities.ready(game, tank, 'heal') && !threat) {
             Abilities.cast(game, tank, 'heal');

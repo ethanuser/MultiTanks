@@ -234,8 +234,8 @@ class TileMap {
         const type = this.at(c, r);
         if (type === TILES.WALL || type === TILES.PILLAR || type === TILES.PIT || type === TILES.DOOR) return Infinity;
         if (type === TILES.CRATE) return 7;
-        if (type === TILES.SPIKES) return 6;
-        if (type === TILES.STRING) return 4;
+        if (type === TILES.SPIKES) return 16;
+        if (type === TILES.STRING) return 10;
         // Tanks are nearly a tile wide, so a route that hugs a wall snags on it
         return this.besideSolid(c, r) ? 1.3 : 1;
     }
@@ -298,12 +298,23 @@ class TileMap {
         for (let i = path.length - 1; i >= 0; i--) {
             if (this.at(path[i].c, path[i].r) === TILES.CRATE) continue;
             const point = center(path[i]);
-            if (this.driveClear(x, y, point.x, point.y, size)) return { ...point, crate: false };
+            if (this.driveClear(x, y, point.x, point.y, size)) {
+                return { ...point, crate: false, hazard: this.stepCost(path[i].c, path[i].r) > 2 };
+            }
         }
 
         const home = center({ c: startC, r: startR });
         if (Math.hypot(home.x - x, home.y - y) > 7) return { ...home, crate: false };
-        return { ...center(first), crate: false };
+        return { ...center(first), crate: false, hazard: this.stepCost(first.c, first.r) > 2 };
+    }
+
+    /**
+     * Would stopping here hurt?
+     * @param {boolean} ringing - Whether strings count, as they only hurt while they ring
+     */
+    hazardAt(x, y, ringing) {
+        const type = this.tileAt(x, y);
+        return type === TILES.SPIKES || type === TILES.PIT || (ringing && type === TILES.STRING);
     }
 
     /**

@@ -70,6 +70,7 @@ class GameRenderer {
         ctx.restore();
 
         if (game.mode && game.mode.objectivePoint) this.renderObjectiveArrow(ctx);
+        if (game.mouse && Prompts.usesMouse() && !game.dialog) this.renderReticle(ctx);
         this.renderHUD(ctx);
         this.renderBanner(ctx);
         if (game.dialog) this.renderDialog(ctx);
@@ -307,8 +308,7 @@ class GameRenderer {
         if (tank.sightLine) this.drawSightLine(ctx, tank);
 
         const half = chassis.grid / 2;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
-        ctx.fillRect(x - chassis.length / 2, y + chassis.width / 2 - 1, chassis.length, 3);
+        ctx.drawImage(Sprites.hullShadow(tank.chassis, direction), x - half, y - half + 2);
 
         ctx.drawImage(Sprites.hull(tank.chassis, palette, direction, frame), x - half, y - half);
 
@@ -663,6 +663,19 @@ class GameRenderer {
         });
     }
 
+    /**
+     * Where the mouse is aiming
+     */
+    renderReticle(ctx) {
+        const x = Math.round(this.game.mouse.x);
+        const y = Math.round(this.game.mouse.y);
+        const arms = [[-6, -1, 4, 3], [3, -1, 4, 3], [-1, -6, 3, 4], [-1, 3, 3, 4]];
+        ctx.fillStyle = OUTLINE_COLOR;
+        arms.forEach(([dx, dy, w, h]) => ctx.fillRect(x + dx, y + dy, w, h));
+        ctx.fillStyle = '#ffd45e';
+        arms.forEach(([dx, dy, w, h]) => ctx.fillRect(x + dx + (w > 3 ? 0 : 1), y + dy + (h > 3 ? 0 : 1), w > 3 ? w : 1, h > 3 ? h : 1));
+    }
+
     renderObjectiveArrow(ctx) {
         const game = this.game;
         if (game.dialog || game.mode.finished) return;
@@ -765,7 +778,7 @@ class GameRenderer {
 
         // Harmony meter, marked at the cost of the cheapest chord
         // None of this means anything until the crew has learned something to play
-        if (!game.mode.knowsHarmony || game.mode.knowsHarmony()) {
+        if (game.harmonyInPlay()) {
             ctx.fillStyle = HUD_COLORS.empty;
             ctx.fillRect(hx, 9, barWidth, 3);
             ctx.fillStyle = HUD_COLORS.harmony;
@@ -807,7 +820,7 @@ class GameRenderer {
             const icon = Sprites.icon(iconName);
             ctx.fillStyle = HUD_COLORS.panel;
             ctx.fillRect(left, 25, 18, 16);
-            ctx.drawImage(icon, left + 2, 26);
+            ctx.drawImage(icon, left + 1, 26);
             ctx.fillStyle = HUD_COLORS.harmony;
             ctx.fillRect(left, 40, Math.ceil(18 * Math.min(1, Math.max(...stack) / full)), 1);
             for (let i = 1; i < stack.length; i++) {
@@ -819,27 +832,34 @@ class GameRenderer {
     }
 
     /**
-     * Each chord the crew knows, along the bottom bar. A chord fills back in from
+     * Everything the player can play, along the bottom bar. Each fills back in from
      * the bottom as its cooldown runs out, and stays dim without the harmony for it.
+     * With more than two players there is only room for the chords.
      */
     renderChordBar(ctx) {
         const game = this.game;
         const y = game.viewH - 14;
         const letters = !Prompts.usingPiano();
+        const crowded = game.players.length > 2;
         game.players.forEach((tank, index) => {
-            const known = Object.entries(HARMONY_CONFIG.CHORDS).filter(([name]) => game.abilityAvailable(tank, name));
-            const step = letters ? 22 : 15;
-            const start = index < 2 ? 4 + index * (step * 4 + 6) : game.viewW - (index - 1) * (step * 4 + 6);
-            known.forEach(([name, chord], i) => {
-                const x = start + i * step;
-                const icon = Sprites.icon(chord.icon);
+            const moves = [
+                ...Object.entries(HARMONY_CONFIG.CHORDS),
+                ...(crowded ? [] : Object.entries(HARMONY_CONFIG.MELODIES))
+            ].filter(([name]) => game.abilityAvailable(tank, name));
+            const step = 15;
+            const chordStep = letters ? 23 : step;
+            const row = chordStep * 4 + (crowded ? 0 : step * 4) + 4;
+            let x = index % 2 === 0 ? 4 + (index / 2) * row : game.viewW - 4 - row * ((index + 1) / 2);
+
+            moves.forEach(([name, move]) => {
+                const icon = Sprites.icon(move.icon);
                 ctx.globalAlpha = Abilities.ready(game, tank, name) ? 1 : 0.35;
                 ctx.drawImage(icon, x, y);
                 ctx.globalAlpha = 1;
 
                 const left = (tank.cooldowns[name] || 0) - game.clock;
                 if (left > 0) {
-                    const height = Math.ceil(13 * Math.min(1, left / chord.cooldown));
+                    const height = Math.ceil(13 * Math.min(1, left / move.cooldown));
                     ctx.fillStyle = 'rgba(27, 24, 48, 0.8)';
                     ctx.fillRect(x, y, 14, height);
                 }
@@ -847,7 +867,9 @@ class GameRenderer {
                     ctx.fillStyle = 'rgba(236, 77, 110, 0.6)';
                     ctx.fillRect(x, y, 14, 13);
                 }
-                if (letters) Sprites.text(ctx, chord.keyCap, x + 15, y - 2, { color: HUD_COLORS.muted });
+                const isChord = !!HARMONY_CONFIG.CHORDS[name];
+                if (letters && isChord) Sprites.text(ctx, move.keyCap, x + 16, y - 2, { color: HUD_COLORS.muted });
+                x += isChord ? chordStep : step;
             });
         });
     }

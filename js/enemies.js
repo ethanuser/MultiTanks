@@ -7,13 +7,13 @@ const ENEMY_BULLET_COLOR = '#ff4d6d';
 const ENEMY_TYPES = {
     quaver: {
         name: 'Quaver', style: 'rusher', chassis: 'scout', palette: 'blood', eyes: 'angry',
-        size: 30, health: 8, speed: 2.4, fireMs: 1000, bulletSpeed: 4.6, damage: 1, range: 150, aggro: 460,
-        pattern: { fan: 3, spread: 0.3 }
+        size: 30, health: 8, speed: 2.4, fireMs: 1500, bulletSpeed: 4.6, damage: 1, range: 150, aggro: 460,
+        swarm: true
     },
     triplet: {
         name: 'Triplet', style: 'skirmisher', chassis: 'triplet', palette: 'bruise', eyes: 'angry',
         size: 38, health: 14, speed: 1.6, fireMs: 1700, bulletSpeed: 4, damage: 1, range: 300, aggro: 520,
-        shots: 3, spread: 0.27, pattern: { fan: 7, spread: 0.2 }
+        shots: 3, spread: 0.27, pattern: { fan: 5, spread: 0.24 }
     },
     metronome: {
         name: 'Metronome', style: 'emplacement', chassis: 'emplacement', palette: 'rust', eyes: 'angry',
@@ -33,23 +33,41 @@ const ENEMY_TYPES = {
     crescendo: {
         name: 'Crescendo', style: 'bomber', chassis: 'bomb', palette: 'acid', eyes: 'hollow',
         size: 34, health: 9, speed: 2.1, damage: 6, blastRadius: 110, aggro: 500,
-        pattern: { ring: 14 }
+        swarm: true
     },
     rest: {
         name: 'Rest', style: 'phantom', chassis: 'wisp', palette: 'hush', eyes: 'hollow',
-        size: 34, health: 12, speed: 2.2, fireMs: 800, bulletSpeed: 4.8, damage: 2, range: 230, aggro: 560,
-        pattern: { ring: 8 }
+        size: 34, health: 12, speed: 2.2, fireMs: 1400, bulletSpeed: 4.8, damage: 2, range: 230, aggro: 560,
+        swarm: true
     },
     fermata: {
         name: 'Fermata', style: 'support', chassis: 'medic', palette: 'pink', eyes: 'sleepy',
-        size: 36, health: 16, speed: 1.4, aggro: 480, supportRadius: 210, supportHeal: 3,
-        pattern: { ring: 8 }
+        size: 36, health: 16, speed: 1.4, bulletSpeed: 4, damage: 1, aggro: 480, supportRadius: 210, supportHeal: 3,
+        pattern: { ring: 6 }
     },
     trill: {
         name: 'Trill', style: 'skirmisher', chassis: 'trill', palette: 'orange', eyes: 'angry',
         size: 38, health: 16, speed: 1.5, fireMs: 2200, bulletSpeed: 5, damage: 1, range: 280, aggro: 520,
-        burst: 5, pattern: { burst: 11 }
+        burst: 5, pattern: { burst: 8 }
+    },
+    // Cannot be hurt until it has been put to sleep, when one shot will finish it
+    sforzando: {
+        name: 'Sforzando', style: 'wakeful', chassis: 'heavy', palette: 'acid', eyes: 'hollow',
+        size: 44, health: 24, speed: 0.9, bulletSpeed: 3.4, damage: 1, aggro: 900,
+        wakeful: true, drowsy: 1000, sleepMs: 12000, ringShots: 6
+    },
+    // The final boss's chorus. Always exactly as tough as The Whole Scale is strong.
+    grace: {
+        name: 'Grace Note', style: 'rusher', chassis: 'scout', palette: 'ghost', eyes: 'hollow',
+        size: 28, fixedHealth: HARMONY_CONFIG.FINALE_DAMAGE, speed: 2.5, fireMs: 1300, bulletSpeed: 4.2,
+        damage: 1, range: 170, aggro: 2000
     }
+};
+
+const ENEMY_SWARM = {
+    SLOTS_PER_TANK: 0.35,   // More of a swarm gets to attack for each tank in the crew
+    WAIT_RANGE: 340,        // How far off the rest of a swarm waits for its turn
+    SPACING: 76             // Enemies keep this far apart
 };
 
 const Enemies = {
@@ -63,7 +81,9 @@ const Enemies = {
      */
     create(game, type, x, y, difficulty) {
         const def = ENEMY_TYPES[type];
-        const health = Math.ceil(def.health * difficulty.enemyHealthMultiplier);
+        const crew = 1 + game.mode.extraTanks(game) * CAMPAIGN_CONFIG.ENEMY_SCALING.healthPerTank;
+        const health = def.fixedHealth
+            ?? Math.ceil(def.health * difficulty.enemyHealthMultiplier * crew * game.mode.crowdToughness(game));
         const enemy = game.createTank({
             x,
             y,
@@ -87,6 +107,9 @@ const Enemies = {
             damage: def.damage * difficulty.enemyDamageMultiplier,
             aimError: difficulty.aimError,
             pattern: difficulty.patterns ? def.pattern : null,
+            patternScale: difficulty.patternScale || 1,
+            doubleTime: !!difficulty.doubleTime && !!def.pattern && !def.pattern.burst,
+            bulletLife: difficulty.bulletLifeMs,
             def,
             alerted: false,
             homeX: x,
@@ -105,6 +128,7 @@ const Enemies = {
         enemy.turretAngle = Math.random() * Math.PI * 2;
         if (def.style === 'emplacement') enemy.onBeat = this.emplacementBeat;
         if (def.style === 'support') enemy.onBeat = this.supportBeat;
+        if (def.style === 'wakeful') enemy.onBeat = this.wakefulBeat;
         return enemy;
     },
 
@@ -116,11 +140,49 @@ const Enemies = {
             this.patrol(game, enemy);
             return;
         }
+        if (enemy.def.swarm && !enemy.engaged) {
+            this.holdBack(game, enemy, target);
+            return;
+        }
         this[enemy.def.style](game, enemy, target, deltaTime);
     },
 
+    /**
+     * A swarm takes turns. Only the few nearest close in and open fire, and the rest
+     * wait out of the fight, circling, until one of those places comes free. Called
+     * once a beat.
+     */
+    organizeSwarm(game, difficulty) {
+        const crew = game.tanks.filter(tank => tank.isAlive && tank.faction === 'crew' && !tank.inert).length;
+        const slots = Math.round(difficulty.swarmSlots * (1 + Math.max(0, crew - 1) * ENEMY_SWARM.SLOTS_PER_TANK));
+        const swarm = game.tanks.filter(tank => tank.isAlive && tank.enemyType && tank.def.swarm && tank.alerted);
+        const reach = enemy => (enemy.currentTarget ? distanceBetween(enemy, enemy.currentTarget) : Infinity);
+        swarm.sort((a, b) => reach(a) - reach(b));
+        swarm.forEach((enemy, i) => {
+            enemy.engaged = i < slots;
+        });
+    },
+
+    holdBack(game, enemy, target) {
+        const distance = distanceBetween(enemy, target);
+        const angle = Math.atan2(target.y - enemy.y, target.x - enemy.x);
+        this.aimAt(game, enemy, angle, 0.06);
+        if (game.clock >= enemy.nextStrafeFlip) {
+            enemy.strafe *= -1;
+            enemy.nextStrafeFlip = game.clock + 1400 + Math.random() * 1400;
+        }
+        if (distance < ENEMY_SWARM.WAIT_RANGE * 0.8) {
+            this.drive(game, enemy, angle + Math.PI + enemy.strafe * 0.6, 0.7);
+        } else if (distance > ENEMY_SWARM.WAIT_RANGE * 1.3) {
+            this.chase(game, enemy, 0.8);
+        } else {
+            this.drive(game, enemy, angle + enemy.strafe * Math.PI / 2, 0.35);
+        }
+    },
+
     chooseTarget(game, enemy) {
-        return game.nearestHostile(enemy, enemy.x, enemy.y);
+        enemy.currentTarget = game.nearestHostile(enemy, enemy.x, enemy.y);
+        return enemy.currentTarget;
     },
 
     /**
@@ -164,8 +226,25 @@ const Enemies = {
 
     drive(game, enemy, angle, factor = 1) {
         const speed = game.speedOf(enemy) * factor;
+        let dirX = Math.cos(angle);
+        let dirY = Math.sin(angle);
+
+        // Enemies spread out as they go, so that there is always a way between them
+        game.tanks.forEach(other => {
+            if (other === enemy || !other.isAlive || !other.enemyType) return;
+            const dx = enemy.x - other.x;
+            const dy = enemy.y - other.y;
+            if (Math.abs(dx) > ENEMY_SWARM.SPACING || Math.abs(dy) > ENEMY_SWARM.SPACING) return;
+            const distance = Math.hypot(dx, dy);
+            if (distance === 0 || distance >= ENEMY_SWARM.SPACING) return;
+            const force = (1 - distance / ENEMY_SWARM.SPACING) * 1.4;
+            dirX += dx / distance * force;
+            dirY += dy / distance * force;
+        });
+
+        const length = Math.hypot(dirX, dirY) || 1;
         game.collisions.moveTankWithSliding(
-            enemy, enemy.x + Math.cos(angle) * speed, enemy.y + Math.sin(angle) * speed, angle
+            enemy, enemy.x + dirX / length * speed, enemy.y + dirY / length * speed, Math.atan2(dirY, dirX)
         );
         enemy.moved = true;
     },
@@ -174,9 +253,8 @@ const Enemies = {
      * Head for the nearest crew member along the shared route
      */
     chase(game, enemy, factor = 1) {
-        const hunted = game.tanks.filter(t => t.isAlive && game.areHostile(enemy, t) && !game.hasStatus(t, 'hidden'));
-        if (hunted.length === 0) return;
-        const route = game.map.routePoint(enemy.x, enemy.y, enemy.size, game.map.field(hunted));
+        if (!enemy.currentTarget) return;
+        const route = game.map.routePoint(enemy.x, enemy.y, enemy.size, game.map.field([enemy.currentTarget]));
         if (!route) return;
 
         if (route.crate) {
@@ -238,6 +316,7 @@ const Enemies = {
             angle,
             speed: enemy.bulletSpeed,
             size: def.bulletSize || 12,
+            life: enemy.bulletLife,
             damage: enemy.damage,
             owner: enemy,
             kind: def.bulletKind || 'wrong',
@@ -251,34 +330,48 @@ const Enemies = {
     },
 
     /**
-     * The extra shots in a pattern travel slower than aimed ones, so that there is
-     * room to read them and weave through
+     * A bullet hell is many weak shots, not many strong ones. The extra shots in a
+     * pattern hit for half and travel slower than aimed ones, so that there is room
+     * to read them and weave through.
      */
+    patternShot(enemy, pace) {
+        return { speed: enemy.bulletSpeed * pace, size: 10, kind: 'wrong', damage: enemy.damage * 0.5 };
+    },
+
     fan(game, enemy, angle, count, spread) {
-        for (let i = 0; i < count; i++) {
-            const offset = (i - (count - 1) / 2) * spread;
-            this.shoot(game, enemy, angle + offset, offset ? { speed: enemy.bulletSpeed * 0.72 } : {});
+        const total = Math.round(count * enemy.patternScale) | 1; // An odd fan keeps one shot aimed
+        for (let i = 0; i < total; i++) {
+            const offset = (i - (total - 1) / 2) * spread * (count / total);
+            this.shoot(game, enemy, angle + offset, offset ? this.patternShot(enemy, 0.72) : {});
         }
     },
 
     ring(game, enemy, count) {
+        const total = Math.round(count * enemy.patternScale);
         const start = Math.random() * Math.PI * 2;
-        for (let i = 0; i < count; i++) {
-            this.shoot(game, enemy, start + (i / count) * Math.PI * 2, {
-                speed: enemy.bulletSpeed * 0.62, size: 11, bounces: 0
-            });
+        for (let i = 0; i < total; i++) {
+            this.shoot(game, enemy, start + (i / total) * Math.PI * 2, { ...this.patternShot(enemy, 0.62), bounces: 0 });
         }
     },
 
     fireVolley(game, enemy, angle) {
         const def = enemy.def;
         const pattern = enemy.pattern;
+        if (enemy.doubleTime && !enemy.playingBack) {
+            // On Fortissimo every pattern comes straight back on the half beat
+            game.after(game.beat.msPerBeat / 2, () => {
+                if (!enemy.isAlive || game.hasStatus(enemy, 'sleep')) return;
+                enemy.playingBack = true;
+                this.fireVolley(game, enemy, enemy.turretAngle);
+                enemy.playingBack = false;
+            });
+        }
         if (pattern && pattern.ring) {
             this.ring(game, enemy, pattern.ring);
         } else if (pattern && pattern.fan) {
             this.fan(game, enemy, angle, pattern.fan, pattern.spread);
         } else if (def.burst) {
-            const burst = pattern ? pattern.burst : def.burst;
+            const burst = Math.round((pattern ? pattern.burst : def.burst) * enemy.patternScale);
             for (let i = 0; i < burst; i++) {
                 game.after(i * 85, () => {
                     if (enemy.isAlive && !game.hasStatus(enemy, 'sleep')) {
@@ -429,7 +522,6 @@ const Enemies = {
         game.ring(enemy.x, enemy.y, radius, '#c8dc40', 300);
         game.shake(6);
         window.audioSystem.blast();
-        if (enemy.pattern) this.ring(game, enemy, enemy.pattern.ring);
         game.tanks.forEach(other => {
             if (other === enemy || !other.isAlive) return;
             if (distanceBetween(other, enemy) < radius + other.size / 2) {
@@ -499,6 +591,22 @@ const Enemies = {
     },
 
     /**
+     * A Sforzando plods after the crew, and is only ever stopped by a Lullaby
+     */
+    wakeful(game, enemy, target) {
+        this.aimAt(game, enemy, Math.atan2(target.y - enemy.y, target.x - enemy.x), 0.04);
+        if (distanceBetween(enemy, target) > 160) this.chase(game, enemy);
+    },
+
+    wakefulBeat(enemy, beatIndex) {
+        const game = window.game;
+        if (beatIndex % 4 === 0 && !game.hasStatus(enemy, 'sleep') && !game.dialog) {
+            Enemies.ring(game, enemy, enemy.def.ringShots);
+            window.audioSystem.enemyShoot();
+        }
+    },
+
+    /**
      * Metronomes track their target and fire strictly on the beat
      */
     emplacement(game, enemy, target) {
@@ -520,7 +628,7 @@ const Enemies = {
             enemy.hurtUntil = game.clock + 80;
         } else if (phase === 0 && game.map.lineClear(enemy.x, enemy.y, enemy.tracking.x, enemy.tracking.y)) {
             Enemies.shoot(game, enemy, enemy.turretAngle);
-            if (enemy.pattern) Enemies.ring(game, enemy, enemy.pattern.ring);
+            if (enemy.pattern && beatIndex % 4 === 0) Enemies.ring(game, enemy, enemy.pattern.ring);
         }
     },
 

@@ -798,6 +798,10 @@ button.roster-card:focus-visible {
     gap: 12px;
 }
 
+.move.locked {
+    opacity: 0.5;
+}
+
 .move-text {
     min-width: 0;
 }
@@ -954,6 +958,7 @@ button.roster-card:focus-visible {
     background: var(--ink-3);
     color: var(--gold);
     box-shadow: inset 0 -4px 0 var(--ink-2);
+    text-decoration: none;
     transition: background-color var(--quick), color var(--quick);
 }
 
@@ -1011,6 +1016,10 @@ input[type="range"]::-moz-range-thumb {
     display: block;
     background-color: var(--ink);
     z-index: 800;
+}
+
+.game-canvas.aiming {
+    cursor: none;
 }
 
 .overlay {
@@ -1088,6 +1097,18 @@ input[type="range"]::-moz-range-thumb {
 
 .results td:first-child, .results th:first-child {
     padding-left: 24px;
+}
+
+.results .row-player b {
+    font-weight: 400;
+    color: var(--gold);
+}
+
+.results td .ic {
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+    color: var(--muted);
 }
 
 .results .swatch {

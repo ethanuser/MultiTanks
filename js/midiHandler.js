@@ -11,6 +11,7 @@ class MidiHandler {
         this.noteListeners = [];           // Hear every key, mapped or not
         this.debugMode = false;
         this.keyboardFallback = false;
+        this.aimMode = loadSaved('multitanks.aim', 'mouse');
         this.keyboardMapping = this.createKeyboardMapping();
         this.keyboardBound = false;
         this.heldKeys = new Set();
@@ -225,8 +226,9 @@ class MidiHandler {
             'KeyD': { player: 0, control: 'C' },       // Right
             'ArrowUp': { player: 0, control: 'A_SHARP' },    // Up (alternative)
             'ArrowDown': { player: 0, control: 'B' },        // Down (alternative)
-            'ArrowLeft': { player: 0, control: 'C_SHARP' },  // Aim Left
-            'ArrowRight': { player: 0, control: 'D_SHARP' }, // Aim Right
+            // Aim, unless the mouse is doing that, when these drive as well
+            'ArrowLeft': { player: 0, control: this.aimMode === 'mouse' ? 'A' : 'C_SHARP' },
+            'ArrowRight': { player: 0, control: this.aimMode === 'mouse' ? 'C' : 'D_SHARP' },
 
             'Space': { player: 0, control: 'D' },
             'Enter': { player: 0, control: 'D' }, // Also turns dialogue pages
@@ -244,6 +246,26 @@ class MidiHandler {
             'KeyE': { player: 0, chord: 'blast' },
             'KeyF': { player: 0, chord: 'heal' }
         };
+    }
+
+    /**
+     * Choose how the computer player aims
+     * @param {string} mode - 'mouse' or 'keys'
+     */
+    setAimMode(mode) {
+        this.aimMode = mode;
+        storeSaved('multitanks.aim', mode);
+        this.keyboardMapping = this.createKeyboardMapping();
+    }
+
+    /**
+     * The mouse button fires, alongside Space and Enter
+     */
+    pressMouse(isPressed) {
+        if (isPressed) this.heldKeys.add('Mouse');
+        else this.heldKeys.delete('Mouse');
+        if (!isPressed && (this.heldKeys.has('Space') || this.heldKeys.has('Enter'))) return;
+        this.emitKeyboard({ player: 0, control: 'D' }, isPressed);
     }
 
     /**
@@ -297,8 +319,8 @@ class MidiHandler {
 
         event.preventDefault();
 
-        // Space and Enter share a control: keep firing if the other is held
-        if (mapping.control === 'D' && (this.heldKeys.has('Space') || this.heldKeys.has('Enter'))) return;
+        // Space, Enter and the mouse share a control: keep firing if another is held
+        if (mapping.control === 'D' && ['Space', 'Enter', 'Mouse'].some(code => this.heldKeys.has(code))) return;
         this.emitKeyboard(mapping, false);
     }
 
@@ -397,12 +419,21 @@ const Prompts = {
         return this.usingPiano() ? 'A, A#, B and C' : 'W A S D';
     },
 
+    /**
+     * Is the first player aiming with the mouse? Not while there is a piano to play.
+     */
+    usesMouse() {
+        return !this.usingPiano() && !!window.midiHandler && window.midiHandler.aimMode === 'mouse';
+    },
+
     aim() {
-        return this.usingPiano() ? 'C# and D#' : 'the Left and Right arrows';
+        if (this.usingPiano()) return 'C# and D#';
+        return this.usesMouse() ? 'the mouse' : 'the Left and Right arrows';
     },
 
     shoot() {
-        return this.usingPiano() ? 'D' : 'Space';
+        if (this.usingPiano()) return 'D';
+        return this.usesMouse() ? 'click or Space' : 'Space';
     },
 
     /**
